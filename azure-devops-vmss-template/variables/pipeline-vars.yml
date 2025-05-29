@@ -1,0 +1,38 @@
+
+# Pipeline Variables Template
+# Define all configurable parameters for the VMSS deployment
+
+variables:
+  # Azure Configuration
+  azureServiceConnection: 'azure-service-connection'  # Replace with your service connection name
+  resourceGroupName: 'rg-devops-vmss'
+  location: 'East US'
+  environmentName: 'production'  # Azure DevOps environment name
+
+  # VMSS Configuration
+  vmssName: 'vmss-devops-agents'
+  vmSize: 'Standard_D2s_v3'
+  instanceCount: 2
+  adminUsername: 'azureuser'
+  
+  # Azure DevOps Configuration
+  azureDevOpsUrl: 'https://dev.azure.com/yourorganization'  # Replace with your organization URL
+  agentPoolName: 'Default'
+  
+  # Network Configuration
+  vnetName: 'vnet-devops'
+  subnetName: 'subnet-agents'
+  vnetAddressPrefix: '10.0.0.0/16'
+  subnetAddressPrefix: '10.0.1.0/24'
+  
+  # Security Configuration
+  nsgName: 'nsg-devops-agents'
+  
+  # Tags
+  projectTag: 'DevOps-Infrastructure'
+  environmentTag: 'Production'
+  ownerTag: 'DevOps-Team'
+
+  # Secure Variables (should be defined in Azure DevOps Library)
+  # adminPassword: '$(admin-password)'  # Define in variable group
+  # azureDevOpsPat: '$(devops-pat)'     # Define in variable group

@@ -1,0 +1,49 @@
+
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": {
+      "value": "East US"
+    },
+    "vmssName": {
+      "value": "vmss-devops-agents"
+    },
+    "vmSize": {
+      "value": "Standard_D2s_v3"
+    },
+    "instanceCount": {
+      "value": 2
+    },
+    "adminUsername": {
+      "value": "azureuser"
+    },
+    "agentPoolName": {
+      "value": "Default"
+    },
+    "vnetName": {
+      "value": "vnet-devops"
+    },
+    "subnetName": {
+      "value": "subnet-agents"
+    },
+    "vnetAddressPrefix": {
+      "value": "10.0.0.0/16"
+    },
+    "subnetAddressPrefix": {
+      "value": "10.0.1.0/24"
+    },
+    "nsgName": {
+      "value": "nsg-devops-agents"
+    },
+    "projectTag": {
+      "value": "DevOps-Infrastructure"
+    },
+    "environmentTag": {
+      "value": "Production"
+    },
+    "ownerTag": {
+      "value": "DevOps-Team"
+    }
+  }
+}

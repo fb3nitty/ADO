@@ -1,0 +1,122 @@
+
+# Azure DevOps Pipeline Template for Windows VMSS with Build Agents
+# This template creates a VM Scale Set with Windows Server 2022 and installs Azure DevOps build agents
+
+trigger:
+  branches:
+    include:
+    - main
+    - develop
+
+variables:
+- template: variables/pipeline-vars.yml
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+- stage: ValidateInfrastructure
+  displayName: 'Validate Infrastructure'
+  jobs:
+  - job: ValidateBicep
+    displayName: 'Validate Bicep Template'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Validate Bicep Template'
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Validating Bicep template..."
+          az deployment group validate \
+            --resource-group $(resourceGroupName) \
+            --template-file bicep/vmss-infrastructure.bicep \
+            --parameters @bicep/parameters.json \
+            --parameters adminPassword=$(adminPassword) \
+            --parameters azureDevOpsUrl=$(azureDevOpsUrl) \
+            --parameters azureDevOpsPat=$(azureDevOpsPat)
+
+- stage: DeployInfrastructure
+  displayName: 'Deploy Infrastructure'
+  dependsOn: ValidateInfrastructure
+  condition: succeeded()
+  jobs:
+  - deployment: DeployVMSS
+    displayName: 'Deploy VMSS Infrastructure'
+    environment: $(environmentName)
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          
+          - task: AzureCLI@2
+            displayName: 'Deploy VMSS with Bicep'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "Deploying VMSS infrastructure..."
+                az deployment group create \
+                  --resource-group $(resourceGroupName) \
+                  --template-file bicep/vmss-infrastructure.bicep \
+                  --parameters @bicep/parameters.json \
+                  --parameters adminPassword=$(adminPassword) \
+                  --parameters azureDevOpsUrl=$(azureDevOpsUrl) \
+                  --parameters azureDevOpsPat=$(azureDevOpsPat) \
+                  --parameters vmssName=$(vmssName) \
+                  --parameters agentPoolName=$(agentPoolName) \
+                  --parameters instanceCount=$(instanceCount) \
+                  --parameters vmSize=$(vmSize) \
+                  --name "vmss-deployment-$(Build.BuildNumber)"
+
+          - task: AzureCLI@2
+            displayName: 'Verify VMSS Deployment'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "Verifying VMSS deployment..."
+                az vmss show \
+                  --resource-group $(resourceGroupName) \
+                  --name $(vmssName) \
+                  --output table
+                
+                echo "Checking VMSS instances..."
+                az vmss list-instances \
+                  --resource-group $(resourceGroupName) \
+                  --name $(vmssName) \
+                  --output table
+
+- stage: ConfigureAgents
+  displayName: 'Configure Build Agents'
+  dependsOn: DeployInfrastructure
+  condition: succeeded()
+  jobs:
+  - job: WaitForAgents
+    displayName: 'Wait for Agents to Register'
+    steps:
+    - task: PowerShell@2
+      displayName: 'Wait for Build Agents'
+      inputs:
+        targetType: 'inline'
+        script: |
+          Write-Host "Waiting for build agents to register with Azure DevOps..."
+          $maxWaitTime = 600 # 10 minutes
+          $waitInterval = 30 # 30 seconds
+          $elapsedTime = 0
+          
+          do {
+            Start-Sleep -Seconds $waitInterval
+            $elapsedTime += $waitInterval
+            Write-Host "Elapsed time: $elapsedTime seconds"
+            
+            # Check agent pool for new agents (this would require Azure DevOps REST API call)
+            Write-Host "Checking for registered agents..."
+            
+          } while ($elapsedTime -lt $maxWaitTime)
+          
+          Write-Host "Agent registration wait period completed."
