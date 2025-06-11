@@ -57,6 +57,9 @@ param environmentTag string = 'Production'
 @description('Owner tag')
 param ownerTag string = 'DevOps-Team'
 
+@description('Creation date for resources')
+param createdDate string = utcNow('yyyy-MM-dd')
+
 // Variables
 var imageReference = {
   publisher: 'MicrosoftWindowsServer'
@@ -112,7 +115,7 @@ var commonTags = {
   Environment: environmentTag
   Owner: ownerTag
   CreatedBy: 'Bicep-Template'
-  CreatedDate: utcNow('yyyy-MM-dd')
+  CreatedDate: createdDate
 }
 
 // Network Security Group
