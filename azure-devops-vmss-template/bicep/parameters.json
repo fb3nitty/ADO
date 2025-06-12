@@ -55,6 +55,56 @@
     },
     "ownerTag": {
       "value": "DevOps-Team"
+    },
+    "_comment_custom_image_config": "=== CUSTOM IMAGE CONFIGURATION ===",
+    "useCustomImage": {
+      "value": false
+    },
+    "customImageType": {
+      "value": "sharedGallery"
+    },
+    "customImageResourceId": {
+      "value": ""
+    },
+    "sharedImageGalleryName": {
+      "value": ""
+    },
+    "imageDefinitionName": {
+      "value": ""
+    },
+    "imageVersion": {
+      "value": "latest"
+    },
+    "_comment_agent_config": "=== AZURE DEVOPS AGENT CONFIGURATION ===",
+    "azureDevOpsUrl": {
+      "value": "https://dev.azure.com/your-organization"
+    },
+    "installDevOpsAgent": {
+      "value": true
+    },
+    "_comment_examples": "=== EXAMPLE CONFIGURATIONS ===",
+    "_example_shared_gallery": {
+      "_description": "Example configuration for using Shared Image Gallery custom image",
+      "useCustomImage": true,
+      "customImageType": "sharedGallery",
+      "customImageResourceId": "/subscriptions/12345678-1234-1234-1234-123456789012/resourceGroups/rg-images/providers/Microsoft.Compute/galleries/myDevOpsGallery/images/windows-devops-agent/versions/1.0.0",
+      "sharedImageGalleryName": "myDevOpsGallery",
+      "imageDefinitionName": "windows-devops-agent",
+      "imageVersion": "1.0.0",
+      "installDevOpsAgent": false
+    },
+    "_example_managed_image": {
+      "_description": "Example configuration for using Managed Image custom image",
+      "useCustomImage": true,
+      "customImageType": "managedImage",
+      "customImageResourceId": "/subscriptions/12345678-1234-1234-1234-123456789012/resourceGroups/rg-images/providers/Microsoft.Compute/images/devops-agent-image",
+      "installDevOpsAgent": false
+    },
+    "_example_marketplace": {
+      "_description": "Example configuration for using marketplace image with script installation",
+      "useCustomImage": false,
+      "azureDevOpsUrl": "https://dev.azure.com/your-organization",
+      "installDevOpsAgent": true
     }
   }
 }
