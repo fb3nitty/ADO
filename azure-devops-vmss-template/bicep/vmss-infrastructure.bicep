@@ -1,6 +1,20 @@
-
 // Azure DevOps VMSS Infrastructure Template
 // Creates a Windows Server 2022 VM Scale Set with Azure DevOps build agents
+//
+// SECURITY CONFIGURATION: PRIVATE IP ONLY WITH vWAN/AZURE FIREWALL
+// ================================================================
+// This template is configured for enhanced security with private IP addresses only:
+// 
+// 1. VM Scale Set instances use PRIVATE IPs only - no public IP addresses assigned
+// 2. Outbound internet connectivity provided via existing vWAN with Azure Firewall
+// 3. Network Security Group rules restricted to VirtualNetwork scope only
+
+// ASSUMPTIONS:
+// - You have an existing vWAN (Virtual WAN) infrastructure with Azure Firewall configured
+// - Azure Firewall is configured to allow outbound connectivity 
+// - The virtual network is either connected to vWAN or you're using an existing vWAN-connected VNet
+// - Azure DevOps agents can reach Azure DevOps services through the Azure Firewall
+// while remaining completely private and secure from inbound internet traffic.
 
 @description('Location for all resources')
 param location string = resourceGroup().location
@@ -33,20 +47,32 @@ param azureDevOpsPat string
 @description('Azure DevOps agent pool name')
 param agentPoolName string = 'Default'
 
-@description('Virtual network name')
+@description('Virtual network name (will be created if using new VNet, or referenced if using existing)')
 param vnetName string = 'vnet-devops'
 
-@description('Subnet name')
+@description('Subnet name (will be created if using new VNet, or referenced if using existing)')
 param subnetName string = 'subnet-agents'
 
-@description('Virtual network address prefix')
+@description('Virtual network address prefix (only used when creating new VNet)')
 param vnetAddressPrefix string = '10.0.0.0/16'
 
-@description('Subnet address prefix')
+@description('Subnet address prefix (only used when creating new VNet)')
 param subnetAddressPrefix string = '10.0.1.0/24'
 
 @description('Network security group name')
 param nsgName string = 'nsg-devops-agents'
+
+@description('Use existing virtual network (true) or create new one (false). If true, specify existingVnetResourceGroup, existingVnetName, and existingSubnetName.')
+param useExistingVnet bool = false
+
+@description('Resource group name of the existing virtual network (required if useExistingVnet is true)')
+param existingVnetResourceGroup string = ''
+
+@description('Name of the existing virtual network (required if useExistingVnet is true)')
+param existingVnetName string = ''
+
+@description('Name of the existing subnet (required if useExistingVnet is true)')
+param existingSubnetName string = ''
 
 @description('Project tag')
 param projectTag string = 'DevOps-Infrastructure'
@@ -68,41 +94,48 @@ var imageReference = {
   version: 'latest'
 }
 
+// Determine VNet and subnet names based on whether using existing or new
+var actualVnetName = useExistingVnet ? existingVnetName : vnetName
+var actualSubnetName = useExistingVnet ? existingSubnetName : subnetName
+var actualVnetResourceGroup = useExistingVnet ? existingVnetResourceGroup : resourceGroup().name
+
+// Network Security Group Rules - Configured for private IP only access
+// RDP access is restricted to VNet only since VMs have no public IPs
 var networkSecurityGroupRules = [
   {
-    name: 'AllowRDP'
+    name: 'AllowRDPFromVNet'
     properties: {
       priority: 1000
       protocol: 'Tcp'
       access: 'Allow'
       direction: 'Inbound'
-      sourceAddressPrefix: '*'
+      sourceAddressPrefix: 'VirtualNetwork'
       sourcePortRange: '*'
       destinationAddressPrefix: '*'
       destinationPortRange: '3389'
     }
   }
   {
-    name: 'AllowHTTPS'
+    name: 'AllowHTTPSFromVNet'
     properties: {
       priority: 1001
       protocol: 'Tcp'
       access: 'Allow'
       direction: 'Inbound'
-      sourceAddressPrefix: '*'
+      sourceAddressPrefix: 'VirtualNetwork'
       sourcePortRange: '*'
       destinationAddressPrefix: '*'
       destinationPortRange: '443'
     }
   }
   {
-    name: 'AllowHTTP'
+    name: 'AllowHTTPFromVNet'
     properties: {
       priority: 1002
       protocol: 'Tcp'
       access: 'Allow'
       direction: 'Inbound'
-      sourceAddressPrefix: '*'
+      sourceAddressPrefix: 'VirtualNetwork'
       sourcePortRange: '*'
       destinationAddressPrefix: '*'
       destinationPortRange: '80'
@@ -128,8 +161,9 @@ resource networkSecurityGroup 'Microsoft.Network/networkSecurityGroups@2023-09-0
   }
 }
 
-// Virtual Network
-resource virtualNetwork 'Microsoft.Network/virtualNetworks@2023-09-01' = {
+// Virtual Network - Only created if not using existing VNet
+// For vWAN scenarios, you may want to use an existing VNet that's connected to vWAN
+resource virtualNetwork 'Microsoft.Network/virtualNetworks@2023-09-01' = if (!useExistingVnet) {
   name: vnetName
   location: location
   tags: commonTags
@@ -147,80 +181,7 @@ resource virtualNetwork 'Microsoft.Network/virtualNetworks@2023-09-01' = {
           networkSecurityGroup: {
             id: networkSecurityGroup.id
           }
-        }
-      }
-    ]
-  }
-}
-
-// Public IP for Load Balancer
-resource publicIP 'Microsoft.Network/publicIPAddresses@2023-09-01' = {
-  name: '${vmssName}-pip'
-  location: location
-  tags: commonTags
-  sku: {
-    name: 'Standard'
-  }
-  properties: {
-    publicIPAllocationMethod: 'Static'
-    dnsSettings: {
-      domainNameLabel: '${vmssName}-${uniqueString(resourceGroup().id)}'
-    }
-  }
-}
-
-// Load Balancer
-resource loadBalancer 'Microsoft.Network/loadBalancers@2023-09-01' = {
-  name: '${vmssName}-lb'
-  location: location
-  tags: commonTags
-  sku: {
-    name: 'Standard'
-  }
-  properties: {
-    frontendIPConfigurations: [
-      {
-        name: 'LoadBalancerFrontEnd'
-        properties: {
-          publicIPAddress: {
-            id: publicIP.id
-          }
-        }
-      }
-    ]
-    backendAddressPools: [
-      {
-        name: 'LoadBalancerBackEndPool'
-      }
-    ]
-    probes: [
-      {
-        name: 'tcpProbe'
-        properties: {
-          protocol: 'Tcp'
-          port: 80
-          intervalInSeconds: 5
-          numberOfProbes: 2
-        }
-      }
-    ]
-    loadBalancingRules: [
-      {
-        name: 'LBRule'
-        properties: {
-          frontendIPConfiguration: {
-            id: resourceId('Microsoft.Network/loadBalancers/frontendIPConfigurations', '${vmssName}-lb', 'LoadBalancerFrontEnd')
-          }
-          backendAddressPool: {
-            id: resourceId('Microsoft.Network/loadBalancers/backendAddressPools', '${vmssName}-lb', 'LoadBalancerBackEndPool')
-          }
-          probe: {
-            id: resourceId('Microsoft.Network/loadBalancers/probes', '${vmssName}-lb', 'tcpProbe')
-          }
-          protocol: 'Tcp'
-          frontendPort: 80
-          backendPort: 80
-          idleTimeoutInMinutes: 15
+          // No NAT Gateway association - outbound connectivity via vWAN Azure Firewall
         }
       }
     ]
@@ -272,14 +233,13 @@ resource vmScaleSet 'Microsoft.Compute/virtualMachineScaleSets@2023-09-01' = {
                 {
                   name: '${vmssName}-ipconfig'
                   properties: {
+                    // Private IP configuration only - no public IP addresses assigned
+                    privateIPAddressVersion: 'IPv4'
                     subnet: {
-                      id: resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, subnetName)
+                      id: resourceId(actualVnetResourceGroup, 'Microsoft.Network/virtualNetworks/subnets', actualVnetName, actualSubnetName)
                     }
-                    loadBalancerBackendAddressPools: [
-                      {
-                        id: resourceId('Microsoft.Network/loadBalancers/backendAddressPools', '${vmssName}-lb', 'LoadBalancerBackEndPool')
-                      }
-                    ]
+                    // Note: publicIPAddressConfiguration is omitted for private-only setup
+                    // Note: loadBalancerBackendAddressPools removed since no load balancer
                   }
                 }
               ]
@@ -311,8 +271,7 @@ resource vmScaleSet 'Microsoft.Compute/virtualMachineScaleSets@2023-09-01' = {
     }
   }
   dependsOn: [
-    virtualNetwork
-    loadBalancer
+    virtualNetwork // Only depends on VNet if we're creating a new one
   ]
 }
 
@@ -381,7 +340,8 @@ resource autoScaleSettings 'Microsoft.Insights/autoscalesettings@2022-10-01' = {
 // Outputs
 output vmssName string = vmScaleSet.name
 output vmssId string = vmScaleSet.id
-output publicIPAddress string = publicIP.properties.ipAddress
-output loadBalancerFQDN string = publicIP.properties.dnsSettings.fqdn
-output virtualNetworkId string = virtualNetwork.id
-output subnetId string = resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, subnetName)
+output virtualNetworkId string = useExistingVnet ? resourceId(actualVnetResourceGroup, 'Microsoft.Network/virtualNetworks', actualVnetName) : virtualNetwork.id
+output subnetId string = resourceId(actualVnetResourceGroup, 'Microsoft.Network/virtualNetworks/subnets', actualVnetName, actualSubnetName)
+output networkSecurityGroupId string = networkSecurityGroup.id
+// Note: VMs use private IPs only - no public IP addresses assigned to instances
+// Note: Outbound connectivity provided by vWAN Azure Firewall - no NAT Gateway outputs
