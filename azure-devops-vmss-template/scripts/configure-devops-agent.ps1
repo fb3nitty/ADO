@@ -1,17 +1,20 @@
 
 <#
 .SYNOPSIS
-    Configures Azure DevOps build agent on Microsoft prebuilt runner images
+    Configures Azure DevOps build agent on Microsoft prebuilt runner images with optional custom package installations
     
 .DESCRIPTION
     This script configures Azure DevOps build agent on Microsoft's prebuilt runner images.
     These images already have development tools installed, so this script focuses on:
+    - Installing Chocolatey package manager for additional tool installations
+    - Installing custom packages via Chocolatey (optional)
     - Downloading and configuring the Azure DevOps agent
     - Registering the agent with the specified pool
     - Starting the agent service
     
-    This is a simplified version for use with Microsoft prebuilt images that already
-    include Visual Studio, .NET SDKs, and other development tools.
+    This is optimized for Microsoft prebuilt images that already include Visual Studio, 
+    .NET SDKs, and other development tools, while providing flexibility to install 
+    additional packages as needed.
     
 .PARAMETER AzureDevOpsUrl
     The URL of your Azure DevOps organization (e.g., https://dev.azure.com/yourorg)
@@ -28,8 +31,25 @@
 .PARAMETER WorkDirectory
     Working directory for the agent (default: C:\agent\_work)
     
+.PARAMETER ChocoPackages
+    Array of Chocolatey package names to install (optional)
+    Examples: @("nodejs", "python", "docker-desktop", "terraform")
+    
+.PARAMETER InstallChocolatey
+    Whether to install Chocolatey package manager (default: $true if ChocoPackages specified, $false otherwise)
+    
+.PARAMETER ChocoPackageParams
+    Hashtable of package-specific parameters for Chocolatey installations
+    Example: @{"nodejs" = "--version=18.17.0"; "python" = "--version=3.11.0"}
+    
 .EXAMPLE
     .\configure-devops-agent.ps1 -AzureDevOpsUrl "https://dev.azure.com/myorg" -PersonalAccessToken "pat123" -AgentPool "Default" -AgentName "BuildAgent"
+    
+.EXAMPLE
+    .\configure-devops-agent.ps1 -AzureDevOpsUrl "https://dev.azure.com/myorg" -PersonalAccessToken "pat123" -AgentPool "Default" -AgentName "BuildAgent" -ChocoPackages @("nodejs", "python", "terraform")
+    
+.EXAMPLE
+    .\configure-devops-agent.ps1 -AzureDevOpsUrl "https://dev.azure.com/myorg" -PersonalAccessToken "pat123" -AgentPool "Default" -AgentName "BuildAgent" -ChocoPackages @("nodejs") -ChocoPackageParams @{"nodejs" = "--version=18.17.0"}
 #>
 
 [CmdletBinding()]
@@ -47,8 +67,22 @@ param(
     [string]$AgentName = "BuildAgent",
     
     [Parameter(Mandatory = $false)]
-    [string]$WorkDirectory = "C:\agent\_work"
+    [string]$WorkDirectory = "C:\agent\_work",
+    
+    [Parameter(Mandatory = $false)]
+    [string[]]$ChocoPackages = @(),
+    
+    [Parameter(Mandatory = $false)]
+    [bool]$InstallChocolatey = $null,
+    
+    [Parameter(Mandatory = $false)]
+    [hashtable]$ChocoPackageParams = @{}
 )
+
+# Determine if Chocolatey should be installed
+if ($null -eq $InstallChocolatey) {
+    $InstallChocolatey = $ChocoPackages.Count -gt 0
+}
 
 # Enable logging
 $LogFile = "C:\temp\devops-agent-config.log"
@@ -59,8 +93,122 @@ try {
     Write-Host "Starting Azure DevOps Agent configuration on Microsoft prebuilt image..." -ForegroundColor Green
     Write-Host "Timestamp: $(Get-Date)" -ForegroundColor Yellow
     
+    if ($InstallChocolatey) {
+        Write-Host "Custom package installation enabled with Chocolatey" -ForegroundColor Cyan
+        if ($ChocoPackages.Count -gt 0) {
+            Write-Host "Packages to install: $($ChocoPackages -join ', ')" -ForegroundColor Cyan
+        }
+    } else {
+        Write-Host "Using Microsoft prebuilt image tools only (no custom packages)" -ForegroundColor Cyan
+    }
+    
     # Set error action preference
     $ErrorActionPreference = "Stop"
+    
+    # Install Chocolatey if requested
+    if ($InstallChocolatey) {
+        Write-Host "Installing Chocolatey package manager..." -ForegroundColor Yellow
+        try {
+            # Check if Chocolatey is already installed
+            $chocoInstalled = $false
+            try {
+                $chocoVersion = choco --version 2>$null
+                if ($chocoVersion) {
+                    Write-Host "Chocolatey is already installed (version: $chocoVersion)" -ForegroundColor Green
+                    $chocoInstalled = $true
+                }
+            }
+            catch {
+                # Chocolatey not found, proceed with installation
+            }
+            
+            if (-not $chocoInstalled) {
+                Write-Host "Chocolatey not found, installing..." -ForegroundColor Yellow
+                
+                # Set execution policy for current process
+                Set-ExecutionPolicy Bypass -Scope Process -Force
+                
+                # Download and install Chocolatey
+                [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+                $chocoInstallScript = Invoke-WebRequest -Uri "https://community.chocolatey.org/install.ps1" -UseBasicParsing
+                Invoke-Expression $chocoInstallScript.Content
+                
+                # Verify installation
+                $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+                $chocoVersion = choco --version 2>$null
+                if ($chocoVersion) {
+                    Write-Host "Chocolatey installed successfully (version: $chocoVersion)" -ForegroundColor Green
+                } else {
+                    throw "Chocolatey installation verification failed"
+                }
+            }
+        }
+        catch {
+            Write-Error "Failed to install Chocolatey: $($_.Exception.Message)"
+            Write-Warning "Continuing without Chocolatey. Custom package installation will be skipped."
+            $InstallChocolatey = $false
+        }
+    }
+    
+    # Install custom packages via Chocolatey
+    if ($InstallChocolatey -and $ChocoPackages.Count -gt 0) {
+        Write-Host "Installing custom packages via Chocolatey..." -ForegroundColor Yellow
+        $packageInstallResults = @()
+        
+        foreach ($package in $ChocoPackages) {
+            try {
+                Write-Host "Installing package: $package" -ForegroundColor Cyan
+                
+                # Build installation command with optional parameters
+                $installArgs = @("install", $package, "-y", "--no-progress")
+                if ($ChocoPackageParams.ContainsKey($package)) {
+                    $packageParams = $ChocoPackageParams[$package]
+                    Write-Host "Using custom parameters for $package`: $packageParams" -ForegroundColor Cyan
+                    $installArgs += $packageParams.Split(' ')
+                }
+                
+                # Execute installation
+                $result = & choco @installArgs 2>&1
+                $exitCode = $LASTEXITCODE
+                
+                if ($exitCode -eq 0) {
+                    Write-Host "Successfully installed: $package" -ForegroundColor Green
+                    $packageInstallResults += @{
+                        Package = $package
+                        Status = "Success"
+                        Message = "Installed successfully"
+                    }
+                } else {
+                    Write-Warning "Failed to install package: $package (Exit code: $exitCode)"
+                    Write-Host "Error output: $result" -ForegroundColor Red
+                    $packageInstallResults += @{
+                        Package = $package
+                        Status = "Failed"
+                        Message = "Exit code: $exitCode"
+                    }
+                }
+            }
+            catch {
+                Write-Warning "Exception while installing package $package`: $($_.Exception.Message)"
+                $packageInstallResults += @{
+                    Package = $package
+                    Status = "Failed"
+                    Message = $_.Exception.Message
+                }
+            }
+        }
+        
+        # Summary of package installations
+        Write-Host "Package installation summary:" -ForegroundColor Yellow
+        foreach ($result in $packageInstallResults) {
+            $color = if ($result.Status -eq "Success") { "Green" } else { "Red" }
+            Write-Host "  $($result.Package): $($result.Status) - $($result.Message)" -ForegroundColor $color
+        }
+        
+        # Refresh environment variables after package installations
+        Write-Host "Refreshing environment variables..." -ForegroundColor Yellow
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+    }
     
     # Create agent directory
     $AgentDirectory = "C:\agent"
@@ -95,6 +243,39 @@ try {
         $gitVersion = git --version 2>$null
         if ($gitVersion) {
             Write-Host "Found Git: $gitVersion" -ForegroundColor Green
+        }
+        
+        # Check for newly installed tools if Chocolatey was used
+        if ($InstallChocolatey -and $ChocoPackages.Count -gt 0) {
+            Write-Host "Verifying newly installed tools..." -ForegroundColor Yellow
+            foreach ($package in $ChocoPackages) {
+                try {
+                    switch ($package.ToLower()) {
+                        "nodejs" {
+                            $nodeVersion = node --version 2>$null
+                            if ($nodeVersion) { Write-Host "Found Node.js: $nodeVersion" -ForegroundColor Green }
+                        }
+                        "python" {
+                            $pythonVersion = python --version 2>$null
+                            if ($pythonVersion) { Write-Host "Found Python: $pythonVersion" -ForegroundColor Green }
+                        }
+                        "terraform" {
+                            $terraformVersion = terraform --version 2>$null
+                            if ($terraformVersion) { Write-Host "Found Terraform: $($terraformVersion.Split("`n")[0])" -ForegroundColor Green }
+                        }
+                        "docker-desktop" {
+                            $dockerVersion = docker --version 2>$null
+                            if ($dockerVersion) { Write-Host "Found Docker: $dockerVersion" -ForegroundColor Green }
+                        }
+                        default {
+                            Write-Host "Custom package installed: $package (verification not implemented)" -ForegroundColor Cyan
+                        }
+                    }
+                }
+                catch {
+                    Write-Host "Could not verify installation of: $package" -ForegroundColor Yellow
+                }
+            }
         }
         
         Write-Host "Development tools verification completed" -ForegroundColor Green
@@ -217,9 +398,16 @@ try {
     Write-Host "Work Directory: $WorkDirectory" -ForegroundColor Yellow
     Write-Host "Log File: $LogFile" -ForegroundColor Yellow
     
+    if ($InstallChocolatey) {
+        Write-Host "Chocolatey Package Manager: Installed" -ForegroundColor Yellow
+        if ($ChocoPackages.Count -gt 0) {
+            Write-Host "Custom Packages: $($ChocoPackages -join ', ')" -ForegroundColor Yellow
+        }
+    }
+    
     # Create a summary file
     $summaryFile = "C:\temp\agent-config-summary.txt"
-    @"
+    $summaryContent = @"
 Azure DevOps Agent Configuration Summary
 =======================================
 Configuration Date: $(Get-Date)
@@ -231,8 +419,22 @@ Computer Name: $env:COMPUTERNAME
 Log File: $LogFile
 Image Type: Microsoft Prebuilt Runner Image
 
-Configuration Status: SUCCESS
-"@ | Out-File -FilePath $summaryFile -Encoding UTF8
+Chocolatey Installation: $(if ($InstallChocolatey) { "YES" } else { "NO" })
+"@
+    
+    if ($InstallChocolatey -and $ChocoPackages.Count -gt 0) {
+        $summaryContent += "`nCustom Packages Requested: $($ChocoPackages -join ', ')"
+        if ($packageInstallResults) {
+            $summaryContent += "`n`nPackage Installation Results:"
+            foreach ($result in $packageInstallResults) {
+                $summaryContent += "`n  $($result.Package): $($result.Status)"
+            }
+        }
+    }
+    
+    $summaryContent += "`n`nConfiguration Status: SUCCESS"
+    
+    $summaryContent | Out-File -FilePath $summaryFile -Encoding UTF8
     
     Write-Host "Configuration summary saved to: $summaryFile" -ForegroundColor Yellow
 }
@@ -249,6 +451,7 @@ Configuration Date: $(Get-Date)
 Error Message: $($_.Exception.Message)
 Computer Name: $env:COMPUTERNAME
 Log File: $LogFile
+Chocolatey Installation Attempted: $(if ($InstallChocolatey) { "YES" } else { "NO" })
 
 Configuration Status: FAILED
 "@ | Out-File -FilePath $errorSummaryFile -Encoding UTF8
