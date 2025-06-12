@@ -1,67 +1,34 @@
-# Azure DevOps VMSS with Custom Runner Images
 
-This guide explains how to use the enhanced Bicep template that supports both marketplace images and custom Azure DevOps runner images for faster deployment and better consistency.
+# Custom Images Guide (Legacy)
 
-## Overview
+> **⚠️ NOTICE**: This guide covers the legacy custom image approach. The template now primarily uses **Microsoft Prebuilt Images** which are faster, more reliable, and easier to maintain. See [README-Microsoft-Images.md](README-Microsoft-Images.md) for the current recommended approach.
 
-The template now supports two deployment approaches:
+This guide explains how to create and use custom Azure DevOps runner images as an alternative to Microsoft prebuilt images. While custom images provide maximum flexibility, they require more maintenance and longer deployment times.
 
-1. **Marketplace Images** (Traditional): Uses Windows Server base image with PowerShell script installation
-2. **Custom Images** (Recommended): Uses pre-built Azure DevOps runner images for faster deployment
+## 📋 Overview
 
-## Custom Image Benefits
+Custom images allow you to:
+- Pre-install specific tool versions
+- Include proprietary software
+- Create standardized environments
+- Reduce agent startup time
+- Implement custom security configurations
 
-- **Faster Deployment**: No need to install and configure agents during VM startup
-- **Consistency**: All VMs use identical, tested configurations
-- **Reliability**: Reduces deployment failures from network issues during agent installation
-- **Customization**: Include additional tools, configurations, and dependencies
-- **Security**: Pre-hardened images with security configurations
+However, they also require:
+- Image creation and maintenance
+- Regular security updates
+- Version management
+- Additional storage costs
 
-## Configuration Options
+## 🏗️ Custom Image Creation Methods
 
-### Using Marketplace Images (Default)
+### Method 1: Azure VM Image Builder (Recommended)
 
-```json
-{
-  "useCustomImage": { "value": false },
-  "installDevOpsAgent": { "value": true },
-  "azureDevOpsUrl": { "value": "https://dev.azure.com/your-organization" }
-}
-```
+Azure VM Image Builder provides a declarative approach to create custom images with automated builds and updates.
 
-### Using Shared Image Gallery Custom Images
+#### 1.1 Create Image Builder Template
 
-```json
-{
-  "useCustomImage": { "value": true },
-  "customImageType": { "value": "sharedGallery" },
-  "customImageResourceId": { 
-    "value": "/subscriptions/12345678-1234-1234-1234-123456789012/resourceGroups/rg-images/providers/Microsoft.Compute/galleries/myDevOpsGallery/images/windows-devops-agent/versions/1.0.0" 
-  },
-  "installDevOpsAgent": { "value": false }
-}
-```
-
-### Using Managed Images
-
-```json
-{
-  "useCustomImage": { "value": true },
-  "customImageType": { "value": "managedImage" },
-  "customImageResourceId": { 
-    "value": "/subscriptions/12345678-1234-1234-1234-123456789012/resourceGroups/rg-images/providers/Microsoft.Compute/images/devops-agent-image" 
-  },
-  "installDevOpsAgent": { "value": false }
-}
-```
-
-## Creating Custom Azure DevOps Runner Images
-
-### Method 1: Using Azure VM Image Builder (Recommended)
-
-Azure VM Image Builder provides a declarative approach to create custom images.
-
-#### 1. Create Image Builder Template
+Create `imagebuilder-template.json`:
 
 ```json
 {
@@ -78,15 +45,68 @@ Azure VM Image Builder provides a declarative approach to create custom images.
     "imageDefinitionName": {
       "type": "string",
       "defaultValue": "windows-devops-agent"
+    },
+    "imageVersion": {
+      "type": "string",
+      "defaultValue": "1.0.0"
     }
   },
+  "variables": {
+    "userAssignedIdentityName": "aibIdentity",
+    "roleDefinitionName": "[guid(resourceGroup().id, 'aibRole')]"
+  },
   "resources": [
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2018-11-30",
+      "name": "[variables('userAssignedIdentityName')]",
+      "location": "[resourceGroup().location]"
+    },
+    {
+      "type": "Microsoft.Authorization/roleDefinitions",
+      "apiVersion": "2018-07-01",
+      "name": "[variables('roleDefinitionName')]",
+      "properties": {
+        "roleName": "Azure Image Builder Service Role",
+        "description": "Custom role for Azure Image Builder",
+        "permissions": [
+          {
+            "actions": [
+              "Microsoft.Compute/galleries/read",
+              "Microsoft.Compute/galleries/images/read",
+              "Microsoft.Compute/galleries/images/versions/read",
+              "Microsoft.Compute/galleries/images/versions/write",
+              "Microsoft.Compute/images/write",
+              "Microsoft.Compute/images/read",
+              "Microsoft.Compute/images/delete"
+            ]
+          }
+        ],
+        "assignableScopes": [
+          "[resourceGroup().id]"
+        ]
+      }
+    },
     {
       "type": "Microsoft.VirtualMachineImages/imageTemplates",
       "apiVersion": "2022-02-14",
       "name": "[parameters('imageTemplateName')]",
       "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('userAssignedIdentityName'))]"
+      ],
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('userAssignedIdentityName'))]": {}
+        }
+      },
       "properties": {
+        "buildTimeoutInMinutes": 120,
+        "vmProfile": {
+          "vmSize": "Standard_D4s_v3",
+          "osDiskSizeGB": 128
+        },
         "source": {
           "type": "PlatformImage",
           "publisher": "MicrosoftWindowsServer",
@@ -97,50 +117,82 @@ Azure VM Image Builder provides a declarative approach to create custom images.
         "customize": [
           {
             "type": "PowerShell",
-            "name": "InstallChocolatey",
+            "name": "SetExecutionPolicy",
             "inline": [
-              "Set-ExecutionPolicy Bypass -Scope Process -Force",
-              "[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072",
-              "iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))"
+              "Set-ExecutionPolicy Bypass -Scope LocalMachine -Force"
             ]
           },
           {
             "type": "PowerShell",
-            "name": "InstallBuildTools",
+            "name": "InstallChocolatey",
+            "inline": [
+              "[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072",
+              "iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))"
+            ]
+          },
+          {
+            "type": "PowerShell",
+            "name": "InstallDevelopmentTools",
             "inline": [
               "choco install git -y",
               "choco install nodejs -y",
               "choco install dotnet-sdk -y",
               "choco install azure-cli -y",
-              "choco install docker-desktop -y"
+              "choco install vscode -y",
+              "choco install 7zip -y",
+              "choco install curl -y"
+            ]
+          },
+          {
+            "type": "PowerShell",
+            "name": "InstallVisualStudioBuildTools",
+            "inline": [
+              "$vsUrl = 'https://aka.ms/vs/17/release/vs_buildtools.exe'",
+              "$vsInstaller = 'C:\\temp\\vs_buildtools.exe'",
+              "New-Item -Path 'C:\\temp' -ItemType Directory -Force",
+              "Invoke-WebRequest -Uri $vsUrl -OutFile $vsInstaller",
+              "Start-Process -FilePath $vsInstaller -ArgumentList '--quiet', '--wait', '--add', 'Microsoft.VisualStudio.Workload.MSBuildTools', '--add', 'Microsoft.VisualStudio.Workload.WebBuildTools', '--add', 'Microsoft.VisualStudio.Workload.NetCoreBuildTools' -Wait",
+              "Remove-Item $vsInstaller -Force"
+            ]
+          },
+          {
+            "type": "PowerShell",
+            "name": "PrepareAzureDevOpsAgent",
+            "inline": [
+              "New-Item -Path 'C:\\agent' -ItemType Directory -Force",
+              "New-Item -Path 'C:\\Scripts' -ItemType Directory -Force",
+              "$agentUrl = 'https://vstsagentpackage.azureedge.net/agent/3.232.0/vsts-agent-win-x64-3.232.0.zip'",
+              "Invoke-WebRequest -Uri $agentUrl -OutFile 'C:\\temp\\agent.zip'",
+              "Expand-Archive -Path 'C:\\temp\\agent.zip' -DestinationPath 'C:\\agent' -Force",
+              "Remove-Item 'C:\\temp\\agent.zip' -Force"
             ]
           },
           {
             "type": "File",
-            "name": "DownloadAgentScript",
-            "sourceUri": "https://raw.githubusercontent.com/your-repo/azure-devops-vmss-template/main/scripts/install-devops-agent.ps1",
-            "destination": "C:\\Scripts\\install-devops-agent.ps1"
+            "name": "CopyConfigurationScript",
+            "sourceUri": "https://raw.githubusercontent.com/your-repo/azure-devops-vmss-template/main/scripts/configure-devops-agent.ps1",
+            "destination": "C:\\Scripts\\configure-devops-agent.ps1"
           },
           {
             "type": "PowerShell",
-            "name": "PrepareAgentInstallation",
+            "name": "ConfigureWindowsFeatures",
             "inline": [
-              "New-Item -Path 'C:\\Scripts' -ItemType Directory -Force",
-              "# Download and prepare Azure DevOps agent but don't configure it yet",
-              "Invoke-WebRequest -Uri 'https://vstsagentpackage.azureedge.net/agent/3.232.0/vsts-agent-win-x64-3.232.0.zip' -OutFile 'C:\\Scripts\\agent.zip'",
-              "Expand-Archive -Path 'C:\\Scripts\\agent.zip' -DestinationPath 'C:\\agent' -Force",
-              "# Create startup script for agent configuration",
-              "@'",
-              "# This script will be run on first boot to configure the agent",
-              "param(",
-              "    [string]$AzureDevOpsUrl,",
-              "    [string]$PersonalAccessToken,",
-              "    [string]$AgentPool = 'Default',",
-              "    [string]$AgentName = $env:COMPUTERNAME",
-              ")",
-              "cd C:\\agent",
-              ".\\config.cmd --unattended --url $AzureDevOpsUrl --auth pat --token $PersonalAccessToken --pool $AgentPool --agent $AgentName --runAsService",
-              "'@ | Out-File -FilePath 'C:\\Scripts\\configure-agent.ps1' -Encoding UTF8"
+              "Enable-WindowsOptionalFeature -Online -FeatureName IIS-WebServerRole -All",
+              "Enable-WindowsOptionalFeature -Online -FeatureName IIS-WebServer -All",
+              "Enable-WindowsOptionalFeature -Online -FeatureName IIS-CommonHttpFeatures -All",
+              "Enable-WindowsOptionalFeature -Online -FeatureName IIS-HttpErrors -All",
+              "Enable-WindowsOptionalFeature -Online -FeatureName IIS-HttpLogging -All",
+              "Enable-WindowsOptionalFeature -Online -FeatureName IIS-Security -All",
+              "Enable-WindowsOptionalFeature -Online -FeatureName IIS-RequestFiltering -All"
+            ]
+          },
+          {
+            "type": "PowerShell",
+            "name": "CleanupAndOptimize",
+            "inline": [
+              "Remove-Item -Path 'C:\\temp\\*' -Recurse -Force -ErrorAction SilentlyContinue",
+              "Clear-RecycleBin -Force -ErrorAction SilentlyContinue",
+              "Optimize-Volume -DriveLetter C -ReTrim -Verbose"
             ]
           },
           {
@@ -152,89 +204,152 @@ Azure VM Image Builder provides a declarative approach to create custom images.
         "distribute": [
           {
             "type": "SharedImage",
-            "galleryImageId": "[concat('/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Compute/galleries/', parameters('galleryName'), '/images/', parameters('imageDefinitionName'))]",
+            "galleryImageId": "[concat('/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Compute/galleries/', parameters('galleryName'), '/images/', parameters('imageDefinitionName'), '/versions/', parameters('imageVersion'))]",
             "runOutputName": "aibCustomWinManaged",
             "replicationRegions": [
               "[resourceGroup().location]"
-            ]
+            ],
+            "storageAccountType": "Standard_LRS"
           }
-        ],
-        "vmProfile": {
-          "vmSize": "Standard_D2s_v3"
-        }
+        ]
       }
     }
   ]
 }
 ```
 
-#### 2. Build the Image
+#### 1.2 Deploy Image Builder Infrastructure
 
 ```bash
-# Create resource group for images
-az group create --name rg-devops-images --location eastus
+# Set variables
+RESOURCE_GROUP="rg-devops-images"
+LOCATION="East US"
+GALLERY_NAME="myDevOpsGallery"
+IMAGE_DEFINITION="windows-devops-agent"
+
+# Create resource group
+az group create --name $RESOURCE_GROUP --location "$LOCATION"
 
 # Create Azure Compute Gallery
-az sig create --resource-group rg-devops-images --gallery-name myDevOpsGallery
+az sig create \
+  --resource-group $RESOURCE_GROUP \
+  --gallery-name $GALLERY_NAME \
+  --location "$LOCATION"
 
 # Create image definition
 az sig image-definition create \
-  --resource-group rg-devops-images \
-  --gallery-name myDevOpsGallery \
-  --gallery-image-definition windows-devops-agent \
+  --resource-group $RESOURCE_GROUP \
+  --gallery-name $GALLERY_NAME \
+  --gallery-image-definition $IMAGE_DEFINITION \
   --publisher MyCompany \
   --offer DevOpsAgents \
   --sku WindowsServer2022 \
   --os-type Windows \
-  --os-state Generalized
+  --os-state Generalized \
+  --hyper-v-generation V2 \
+  --location "$LOCATION"
 
-# Deploy the image builder template
+# Deploy image builder template
 az deployment group create \
-  --resource-group rg-devops-images \
+  --resource-group $RESOURCE_GROUP \
   --template-file imagebuilder-template.json \
-  --parameters galleryName=myDevOpsGallery
+  --parameters galleryName=$GALLERY_NAME \
+  --parameters imageDefinitionName=$IMAGE_DEFINITION
+```
 
-# Start the image build
-az image builder run --name devops-agent-template --resource-group rg-devops-images
+#### 1.3 Build the Image
+
+```bash
+# Start image build
+az image builder run \
+  --name devops-agent-template \
+  --resource-group $RESOURCE_GROUP
+
+# Monitor build progress
+az image builder show-runs \
+  --name devops-agent-template \
+  --resource-group $RESOURCE_GROUP \
+  --output table
+
+# Check build logs
+az image builder show-runs \
+  --name devops-agent-template \
+  --resource-group $RESOURCE_GROUP \
+  --run-output-name aibCustomWinManaged
 ```
 
 ### Method 2: Manual VM Creation and Sysprep
 
-#### 1. Create Base VM
+For more control over the image creation process, you can manually create and configure a VM.
+
+#### 2.1 Create Base VM
 
 ```bash
 # Create VM from marketplace image
 az vm create \
-  --resource-group rg-devops-images \
+  --resource-group $RESOURCE_GROUP \
   --name vm-devops-base \
   --image Win2022Datacenter \
   --admin-username azureuser \
   --admin-password 'YourSecurePassword123!' \
-  --size Standard_D2s_v3
+  --size Standard_D4s_v3 \
+  --location "$LOCATION"
+
+# Get public IP for RDP access
+az vm show \
+  --resource-group $RESOURCE_GROUP \
+  --name vm-devops-base \
+  --show-details \
+  --query publicIps \
+  --output tsv
 ```
 
-#### 2. Configure the VM
+#### 2.2 Configure the VM
 
-1. RDP to the VM
-2. Install required software:
-   - Git
-   - Node.js
-   - .NET SDK
-   - Azure CLI
-   - Docker Desktop
-   - Visual Studio Build Tools
-   - Any other required tools
+Connect via RDP and run the following PowerShell script:
 
-3. Download and prepare Azure DevOps agent:
 ```powershell
-# Create agent directory
+# Set execution policy
+Set-ExecutionPolicy Bypass -Scope LocalMachine -Force
+
+# Install Chocolatey
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+
+# Install development tools
+choco install git -y
+choco install nodejs -y
+choco install dotnet-sdk -y
+choco install azure-cli -y
+choco install vscode -y
+choco install 7zip -y
+choco install curl -y
+choco install docker-desktop -y
+
+# Install Visual Studio Build Tools
+$vsUrl = 'https://aka.ms/vs/17/release/vs_buildtools.exe'
+$vsInstaller = 'C:\temp\vs_buildtools.exe'
+New-Item -Path 'C:\temp' -ItemType Directory -Force
+Invoke-WebRequest -Uri $vsUrl -OutFile $vsInstaller
+Start-Process -FilePath $vsInstaller -ArgumentList '--quiet', '--wait', '--add', 'Microsoft.VisualStudio.Workload.MSBuildTools', '--add', 'Microsoft.VisualStudio.Workload.WebBuildTools', '--add', 'Microsoft.VisualStudio.Workload.NetCoreBuildTools' -Wait
+Remove-Item $vsInstaller -Force
+
+# Prepare Azure DevOps agent directory
 New-Item -Path 'C:\agent' -ItemType Directory -Force
+New-Item -Path 'C:\Scripts' -ItemType Directory -Force
 
-# Download agent
-Invoke-WebRequest -Uri 'https://vstsagentpackage.azureedge.net/agent/3.232.0/vsts-agent-win-x64-3.232.0.zip' -OutFile 'C:\temp\agent.zip'
+# Download Azure DevOps agent
+$agentUrl = 'https://vstsagentpackage.azureedge.net/agent/3.232.0/vsts-agent-win-x64-3.232.0.zip'
+Invoke-WebRequest -Uri $agentUrl -OutFile 'C:\temp\agent.zip'
 Expand-Archive -Path 'C:\temp\agent.zip' -DestinationPath 'C:\agent' -Force
+Remove-Item 'C:\temp\agent.zip' -Force
 
-# Create configuration script for first boot
+# Enable IIS features
+Enable-WindowsOptionalFeature -Online -FeatureName IIS-WebServerRole -All
+Enable-WindowsOptionalFeature -Online -FeatureName IIS-WebServer -All
+Enable-WindowsOptionalFeature -Online -FeatureName IIS-CommonHttpFeatures -All
+
+# Create agent configuration script
 @'
 param(
     [string]$AzureDevOpsUrl,
@@ -242,195 +357,177 @@ param(
     [string]$AgentPool = "Default",
     [string]$AgentName = $env:COMPUTERNAME
 )
+
 cd C:\agent
-.\config.cmd --unattended --url $AzureDevOpsUrl --auth pat --token $PersonalAccessToken --pool $AgentPool --agent $AgentName --runAsService
+.\config.cmd --unattended --url $AzureDevOpsUrl --auth pat --token $PersonalAccessToken --pool $AgentPool --agent $AgentName --runAsService --windowsLogonAccount "NT AUTHORITY\SYSTEM"
 '@ | Out-File -FilePath 'C:\Scripts\configure-agent.ps1' -Encoding UTF8
+
+# Cleanup
+Remove-Item -Path 'C:\temp\*' -Recurse -Force -ErrorAction SilentlyContinue
+Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+
+# Optimize disk
+Optimize-Volume -DriveLetter C -ReTrim -Verbose
+
+Write-Host "VM configuration completed. Ready for Sysprep." -ForegroundColor Green
 ```
 
-#### 3. Sysprep and Capture
+#### 2.3 Sysprep and Capture
 
 ```powershell
-# Run Sysprep
-C:\Windows\System32\Sysprep\sysprep.exe /generalize /oobe /shutdown
+# Run Sysprep to generalize the VM
+C:\Windows\System32\Sysprep\sysprep.exe /generalize /oobe /shutdown /mode:vm
 ```
 
-#### 4. Create Managed Image
+After the VM shuts down:
 
 ```bash
 # Deallocate and generalize VM
-az vm deallocate --resource-group rg-devops-images --name vm-devops-base
-az vm generalize --resource-group rg-devops-images --name vm-devops-base
+az vm deallocate --resource-group $RESOURCE_GROUP --name vm-devops-base
+az vm generalize --resource-group $RESOURCE_GROUP --name vm-devops-base
 
 # Create managed image
 az image create \
-  --resource-group rg-devops-images \
+  --resource-group $RESOURCE_GROUP \
   --name devops-agent-image \
-  --source vm-devops-base
+  --source vm-devops-base \
+  --location "$LOCATION"
+
+# Or create image version in Shared Image Gallery
+az sig image-version create \
+  --resource-group $RESOURCE_GROUP \
+  --gallery-name $GALLERY_NAME \
+  --gallery-image-definition $IMAGE_DEFINITION \
+  --gallery-image-version 1.0.0 \
+  --target-regions "$LOCATION=1" \
+  --managed-image devops-agent-image
 ```
 
-## Best Practices for Custom Images
+## 🔧 Using Custom Images in VMSS Template
 
-### 1. Image Versioning Strategy
+### Configuration for Shared Image Gallery
 
-- Use semantic versioning (e.g., 1.0.0, 1.1.0, 2.0.0)
-- Tag images with build date and tools versions
-- Maintain multiple versions for rollback capability
+```json
+{
+  "useCustomImage": {
+    "value": true
+  },
+  "customImageType": {
+    "value": "sharedGallery"
+  },
+  "customImageResourceId": {
+    "value": "/subscriptions/12345678-1234-1234-1234-123456789012/resourceGroups/rg-devops-images/providers/Microsoft.Compute/galleries/myDevOpsGallery/images/windows-devops-agent/versions/1.0.0"
+  },
+  "configureDevOpsAgent": {
+    "value": true
+  }
+}
+```
+
+### Configuration for Managed Image
+
+```json
+{
+  "useCustomImage": {
+    "value": true
+  },
+  "customImageType": {
+    "value": "managedImage"
+  },
+  "customImageResourceId": {
+    "value": "/subscriptions/12345678-1234-1234-1234-123456789012/resourceGroups/rg-devops-images/providers/Microsoft.Compute/images/devops-agent-image"
+  },
+  "configureDevOpsAgent": {
+    "value": true
+  }
+}
+```
+
+### Deployment Example
 
 ```bash
-# Example versioning
+az deployment group create \
+  --resource-group rg-devops \
+  --template-file bicep/vmss-infrastructure.bicep \
+  --parameters useCustomImage=true \
+  --parameters customImageType=sharedGallery \
+  --parameters customImageResourceId="/subscriptions/.../galleries/myDevOpsGallery/images/windows-devops-agent/versions/1.0.0" \
+  --parameters configureDevOpsAgent=true \
+  --parameters azureDevOpsUrl=https://dev.azure.com/myorg \
+  --parameters azureDevOpsPat=<your-pat> \
+  --parameters adminPassword=<secure-password>
+```
+
+## 📋 Image Management Best Practices
+
+### 1. Version Management Strategy
+
+#### Semantic Versioning
+```bash
+# Major version for breaking changes
+az sig image-version create --gallery-image-version 2.0.0
+
+# Minor version for new features
+az sig image-version create --gallery-image-version 1.1.0
+
+# Patch version for bug fixes
+az sig image-version create --gallery-image-version 1.0.1
+```
+
+#### Tagging Strategy
+```bash
+# Tag images with metadata
 az sig image-version create \
-  --resource-group rg-devops-images \
-  --gallery-name myDevOpsGallery \
-  --gallery-image-definition windows-devops-agent \
   --gallery-image-version 1.2.0 \
-  --target-regions eastus=1 westus2=1 \
-  --replica-count 2
+  --tags "BuildDate=$(date +%Y-%m-%d)" \
+         "DotNetVersion=8.0" \
+         "NodeVersion=18.17.0" \
+         "Environment=Production"
 ```
 
 ### 2. Automated Image Updates
 
-Create a pipeline to automatically update images:
+Create an Azure DevOps pipeline for automated image builds:
 
 ```yaml
-# azure-pipelines-image-update.yml
+# azure-pipelines-image-build.yml
 trigger:
-  - main
+  branches:
+    include:
+    - main
+  paths:
+    include:
+    - images/
+    - scripts/
 
-pool:
-  vmImage: 'ubuntu-latest'
+variables:
+  resourceGroupName: 'rg-devops-images'
+  galleryName: 'myDevOpsGallery'
+  imageDefinitionName: 'windows-devops-agent'
 
-steps:
-- task: AzureCLI@2
-  displayName: 'Build Updated Image'
-  inputs:
-    azureSubscription: 'your-service-connection'
-    scriptType: 'bash'
-    scriptLocation: 'inlineScript'
-    inlineScript: |
-      # Update image builder template with latest tools
-      az image builder run --name devops-agent-template --resource-group rg-devops-images
-      
-      # Wait for completion
-      az image builder show-runs --name devops-agent-template --resource-group rg-devops-images
-```
-
-### 3. Security Hardening
-
-- Apply Windows security baselines
-- Install latest security updates
-- Configure Windows Defender
-- Remove unnecessary features and services
-- Implement least privilege principles
-
-### 4. Monitoring and Maintenance
-
-- Set up alerts for image build failures
-- Monitor image usage and performance
-- Regular security scanning of images
-- Automated cleanup of old image versions
-
-```bash
-# Cleanup old image versions (keep last 3)
-az sig image-version list \
-  --resource-group rg-devops-images \
-  --gallery-name myDevOpsGallery \
-  --gallery-image-definition windows-devops-agent \
-  --query '[3:].name' -o tsv | \
-  xargs -I {} az sig image-version delete \
-    --resource-group rg-devops-images \
-    --gallery-name myDevOpsGallery \
-    --gallery-image-definition windows-devops-agent \
-    --gallery-image-version {}
-```
-
-## Referencing Marketplace Images with Build Tools
-
-For scenarios where you want to use marketplace images with pre-installed development tools:
-
-### Visual Studio Build Tools Images
-
-```json
-{
-  "imageReference": {
-    "publisher": "MicrosoftVisualStudio",
-    "offer": "visualstudio2022",
-    "sku": "vs-2022-ent-latest-ws2022",
-    "version": "latest"
-  }
-}
-```
-
-### Windows Server with Containers
-
-```json
-{
-  "imageReference": {
-    "publisher": "MicrosoftWindowsServer",
-    "offer": "WindowsServer",
-    "sku": "2022-datacenter-azure-edition-core-smalldisk",
-    "version": "latest"
-  }
-}
-```
-
-### SQL Server Developer Edition
-
-```json
-{
-  "imageReference": {
-    "publisher": "MicrosoftSQLServer",
-    "offer": "sql2022-ws2022",
-    "sku": "sqldev-gen2",
-    "version": "latest"
-  }
-}
-```
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Image not found**: Verify the resource ID format and permissions
-2. **Agent configuration fails**: Check network connectivity and PAT permissions
-3. **Slow deployment**: Ensure custom images are in the same region as VMSS
-4. **Build failures**: Check Image Builder logs and network access
-
-### Debugging Commands
-
-```bash
-# Check image builder status
-az image builder show --name devops-agent-template --resource-group rg-devops-images
-
-# View build logs
-az image builder show-runs --name devops-agent-template --resource-group rg-devops-images
-
-# Test VMSS deployment
-az vmss show --name vmss-devops-agents --resource-group rg-devops
-
-# Check VM instances
-az vmss list-instances --name vmss-devops-agents --resource-group rg-devops
-```
-
-## Cost Optimization
-
-- Use Azure Spot instances for non-critical workloads
-- Implement auto-scaling based on build queue depth
-- Use smaller VM sizes for lightweight builds
-- Schedule scale-down during off-hours
-- Monitor and optimize storage costs for images
-
-## Security Considerations
-
-- Store PAT tokens in Azure Key Vault
-- Use managed identities where possible
-- Implement network security groups and private endpoints
-- Regular security updates for custom images
-- Audit and monitor image access
-
-## Next Steps
-
-1. Create your first custom image using Azure VM Image Builder
-2. Test deployment with the updated Bicep template
-3. Implement automated image update pipeline
-4. Set up monitoring and alerting
-5. Optimize for your specific build requirements
+stages:
+- stage: BuildImage
+  displayName: 'Build Custom Image'
+  jobs:
+  - job: BuildJob
+    displayName: 'Build Image Job'
+    pool:
+      vmImage: 'ubuntu-latest'
+    
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Create Image Version'
+      inputs:
+        azureSubscription: 'your-service-connection'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          # Calculate next version
+          LATEST_VERSION=$(az sig image-version list \
+            --resource-group $(resourceGroupName) \
+            --gallery-name $(galleryName) \
+            --gallery-image-definition $(imageDefinitionName) \
+            --query "max_by([].name, &name)" -o tsv)
+          
+          # Increment patch version
+          IFS='.' read -ra VERSION_PARTS <<
