@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.36.1.42791",
-      "templateHash": "12673907044130487400"
+      "templateHash": "258889424152081934"
     }
   },
   "parameters": {
@@ -25,7 +25,7 @@
     },
     "vmSize": {
       "type": "string",
-      "defaultValue": "Standard_D2s_v3",
+      "defaultValue": "Standard_D4s_v3",
       "metadata": {
         "description": "Size of the VM instances"
       }
@@ -52,64 +52,31 @@
         "description": "Admin password for the VMs"
       }
     },
-    "useCustomImage": {
-      "type": "bool",
-      "defaultValue": false,
-      "metadata": {
-        "description": "Use custom Azure DevOps runner image instead of marketplace image with script installation"
-      }
-    },
-    "customImageType": {
+    "microsoftImageType": {
       "type": "string",
-      "defaultValue": "sharedGallery",
+      "defaultValue": "vs2022-enterprise",
       "allowedValues": [
-        "sharedGallery",
-        "managedImage"
+        "vs2022-enterprise",
+        "vs2022-buildtools",
+        "vs2019-enterprise",
+        "windowsserver-2022"
       ],
       "metadata": {
-        "description": "Type of custom image to use. Only applicable when useCustomImage is true."
-      }
-    },
-    "customImageResourceId": {
-      "type": "string",
-      "defaultValue": "",
-      "metadata": {
-        "description": "Full resource ID of the custom image. Required when useCustomImage is true. Format depends on customImageType: For sharedGallery: /subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Compute/galleries/{galleryName}/images/{imageDefinitionName}/versions/{versionNumber} For managedImage: /subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Compute/images/{imageName}"
-      }
-    },
-    "sharedImageGalleryName": {
-      "type": "string",
-      "defaultValue": "",
-      "metadata": {
-        "description": "Name of the Azure Compute Gallery (Shared Image Gallery). Only used when customImageType is sharedGallery for documentation purposes."
-      }
-    },
-    "imageDefinitionName": {
-      "type": "string",
-      "defaultValue": "",
-      "metadata": {
-        "description": "Name of the image definition in the Shared Image Gallery. Only used when customImageType is sharedGallery for documentation purposes."
-      }
-    },
-    "imageVersion": {
-      "type": "string",
-      "defaultValue": "latest",
-      "metadata": {
-        "description": "Version of the image in the Shared Image Gallery. Only used when customImageType is sharedGallery for documentation purposes."
+        "description": "Microsoft prebuilt runner image type to use"
       }
     },
     "azureDevOpsUrl": {
       "type": "string",
       "defaultValue": "",
       "metadata": {
-        "description": "Azure DevOps organization URL. Required when using marketplace images or when custom images need agent configuration."
+        "description": "Azure DevOps organization URL. Required for agent registration."
       }
     },
     "azureDevOpsPat": {
       "type": "securestring",
       "defaultValue": "",
       "metadata": {
-        "description": "Azure DevOps Personal Access Token. Required when using marketplace images or when custom images need agent configuration."
+        "description": "Azure DevOps Personal Access Token. Required for agent registration."
       }
     },
     "agentPoolName": {
@@ -119,11 +86,11 @@
         "description": "Azure DevOps agent pool name"
       }
     },
-    "installDevOpsAgent": {
+    "configureDevOpsAgent": {
       "type": "bool",
       "defaultValue": true,
       "metadata": {
-        "description": "Install Azure DevOps agent via PowerShell script. Set to false when using custom images that already have the agent pre-installed."
+        "description": "Configure Azure DevOps agent via PowerShell script. Set to false if agents are pre-configured in the image."
       }
     },
     "vnetName": {
@@ -219,14 +186,34 @@
     }
   },
   "variables": {
-    "marketplaceImageReference": {
-      "publisher": "MicrosoftWindowsServer",
-      "offer": "WindowsServer",
-      "sku": "2022-datacenter-azure-edition",
-      "version": "latest"
+    "microsoftImageReferences": {
+      "vs2022-enterprise": {
+        "publisher": "MicrosoftVisualStudio",
+        "offer": "visualstudio2022",
+        "sku": "vs-2022-ent-latest-ws2022",
+        "version": "latest"
+      },
+      "vs2022-buildtools": {
+        "publisher": "MicrosoftVisualStudio",
+        "offer": "visualstudio2022",
+        "sku": "vs-2022-buildtools-latest-ws2022",
+        "version": "latest"
+      },
+      "vs2019-enterprise": {
+        "publisher": "MicrosoftVisualStudio",
+        "offer": "visualstudio2019",
+        "sku": "vs-2019-ent-latest-ws2019",
+        "version": "latest"
+      },
+      "windowsserver-2022": {
+        "publisher": "MicrosoftWindowsServer",
+        "offer": "WindowsServer",
+        "sku": "2022-datacenter-azure-edition",
+        "version": "latest"
+      }
     },
-    "customImageReference": "[if(parameters('useCustomImage'), if(equals(parameters('customImageType'), 'sharedGallery'), createObject('sharedGalleryImageId', parameters('customImageResourceId')), createObject('id', parameters('customImageResourceId'))), createObject())]",
-    "imageReference": "[if(parameters('useCustomImage'), variables('customImageReference'), variables('marketplaceImageReference'))]",
+    "imageReference": "[variables('microsoftImageReferences')[parameters('microsoftImageType')]]",
+    "purchasePlan": "[if(startsWith(parameters('microsoftImageType'), 'vs'), createObject('name', variables('imageReference').sku, 'publisher', variables('imageReference').publisher, 'product', variables('imageReference').offer), null())]",
     "actualVnetName": "[if(parameters('useExistingVnet'), parameters('existingVnetName'), parameters('vnetName'))]",
     "actualSubnetName": "[if(parameters('useExistingVnet'), parameters('existingSubnetName'), parameters('subnetName'))]",
     "actualVnetResourceGroup": "[if(parameters('useExistingVnet'), parameters('existingVnetResourceGroup'), resourceGroup().name)]",
@@ -277,8 +264,8 @@
       "Owner": "[parameters('ownerTag')]",
       "CreatedBy": "Bicep-Template",
       "CreatedDate": "[parameters('createdDate')]",
-      "ImageType": "[if(parameters('useCustomImage'), 'Custom', 'Marketplace')]",
-      "CustomImageType": "[if(parameters('useCustomImage'), parameters('customImageType'), 'N/A')]"
+      "ImageType": "Microsoft-Prebuilt",
+      "MicrosoftImageType": "[parameters('microsoftImageType')]"
     }
   },
   "resources": [
@@ -327,6 +314,7 @@
       "name": "[parameters('vmssName')]",
       "location": "[parameters('location')]",
       "tags": "[variables('commonTags')]",
+      "plan": "[variables('purchasePlan')]",
       "sku": {
         "name": "[parameters('vmSize')]",
         "tier": "Standard",
@@ -379,7 +367,7 @@
             ]
           },
           "extensionProfile": {
-            "extensions": "[if(parameters('installDevOpsAgent'), createArray(createObject('name', 'InstallDevOpsAgent', 'properties', createObject('publisher', 'Microsoft.Compute', 'type', 'CustomScriptExtension', 'typeHandlerVersion', '1.10', 'autoUpgradeMinorVersion', true(), 'settings', createObject('fileUris', createArray('https://raw.githubusercontent.com/your-repo/azure-devops-vmss-template/main/scripts/install-devops-agent.ps1')), 'protectedSettings', createObject('commandToExecute', format('powershell -ExecutionPolicy Unrestricted -File install-devops-agent.ps1 -AzureDevOpsUrl \"{0}\" -PersonalAccessToken \"{1}\" -AgentPool \"{2}\" -AgentName \"{3}-agent\"', parameters('azureDevOpsUrl'), parameters('azureDevOpsPat'), parameters('agentPoolName'), parameters('vmssName')))))), createArray())]"
+            "extensions": "[if(parameters('configureDevOpsAgent'), createArray(createObject('name', 'ConfigureDevOpsAgent', 'properties', createObject('publisher', 'Microsoft.Compute', 'type', 'CustomScriptExtension', 'typeHandlerVersion', '1.10', 'autoUpgradeMinorVersion', true(), 'settings', createObject('fileUris', createArray('https://raw.githubusercontent.com/your-repo/azure-devops-vmss-template/main/scripts/configure-devops-agent.ps1')), 'protectedSettings', createObject('commandToExecute', format('powershell -ExecutionPolicy Unrestricted -File configure-devops-agent.ps1 -AzureDevOpsUrl \"{0}\" -PersonalAccessToken \"{1}\" -AgentPool \"{2}\" -AgentName \"{3}-agent\"', parameters('azureDevOpsUrl'), parameters('azureDevOpsPat'), parameters('agentPoolName'), parameters('vmssName')))))), createArray())]"
           }
         }
       },
@@ -476,15 +464,27 @@
     },
     "imageType": {
       "type": "string",
-      "value": "[if(parameters('useCustomImage'), 'Custom', 'Marketplace')]"
+      "value": "Microsoft-Prebuilt"
     },
-    "customImageResourceId": {
+    "microsoftImageType": {
       "type": "string",
-      "value": "[if(parameters('useCustomImage'), parameters('customImageResourceId'), 'N/A')]"
+      "value": "[parameters('microsoftImageType')]"
     },
-    "agentInstallationMethod": {
+    "imagePublisher": {
       "type": "string",
-      "value": "[if(parameters('installDevOpsAgent'), 'PowerShell Script', 'Pre-installed in Image')]"
+      "value": "[variables('imageReference').publisher]"
+    },
+    "imageOffer": {
+      "type": "string",
+      "value": "[variables('imageReference').offer]"
+    },
+    "imageSku": {
+      "type": "string",
+      "value": "[variables('imageReference').sku]"
+    },
+    "agentConfigurationMethod": {
+      "type": "string",
+      "value": "[if(parameters('configureDevOpsAgent'), 'PowerShell Script', 'Pre-configured in Image')]"
     }
   }
 }

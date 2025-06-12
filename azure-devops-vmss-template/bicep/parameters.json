@@ -1,3 +1,4 @@
+
 {
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
   "contentVersion": "1.0.0.0",
@@ -9,7 +10,7 @@
       "value": "vmss-devops-agents"
     },
     "vmSize": {
-      "value": "Standard_D2s_v3"
+      "value": "Standard_D4s_v3"
     },
     "instanceCount": {
       "value": 2
@@ -56,55 +57,74 @@
     "ownerTag": {
       "value": "DevOps-Team"
     },
-    "_comment_custom_image_config": "=== CUSTOM IMAGE CONFIGURATION ===",
-    "useCustomImage": {
-      "value": false
-    },
-    "customImageType": {
-      "value": "sharedGallery"
-    },
-    "customImageResourceId": {
-      "value": ""
-    },
-    "sharedImageGalleryName": {
-      "value": ""
-    },
-    "imageDefinitionName": {
-      "value": ""
-    },
-    "imageVersion": {
-      "value": "latest"
+    "_comment_microsoft_image_config": "=== MICROSOFT PREBUILT IMAGE CONFIGURATION ===",
+    "microsoftImageType": {
+      "value": "vs2022-enterprise"
     },
     "_comment_agent_config": "=== AZURE DEVOPS AGENT CONFIGURATION ===",
     "azureDevOpsUrl": {
       "value": "https://dev.azure.com/your-organization"
     },
-    "installDevOpsAgent": {
+    "configureDevOpsAgent": {
       "value": true
     },
     "_comment_examples": "=== EXAMPLE CONFIGURATIONS ===",
-    "_example_shared_gallery": {
-      "_description": "Example configuration for using Shared Image Gallery custom image",
-      "useCustomImage": true,
-      "customImageType": "sharedGallery",
-      "customImageResourceId": "/subscriptions/12345678-1234-1234-1234-123456789012/resourceGroups/rg-images/providers/Microsoft.Compute/galleries/myDevOpsGallery/images/windows-devops-agent/versions/1.0.0",
-      "sharedImageGalleryName": "myDevOpsGallery",
-      "imageDefinitionName": "windows-devops-agent",
-      "imageVersion": "1.0.0",
-      "installDevOpsAgent": false
+    "_example_vs2022_enterprise": {
+      "_description": "Visual Studio 2022 Enterprise on Windows Server 2022 - Full development environment",
+      "microsoftImageType": "vs2022-enterprise",
+      "vmSize": "Standard_D4s_v3",
+      "configureDevOpsAgent": true,
+      "_features": [
+        "Visual Studio 2022 Enterprise",
+        ".NET 6/7/8 SDKs",
+        "Azure CLI",
+        "Git for Windows",
+        "MSBuild",
+        "NuGet",
+        "PowerShell Core",
+        "Windows SDK"
+      ]
     },
-    "_example_managed_image": {
-      "_description": "Example configuration for using Managed Image custom image",
-      "useCustomImage": true,
-      "customImageType": "managedImage",
-      "customImageResourceId": "/subscriptions/12345678-1234-1234-1234-123456789012/resourceGroups/rg-images/providers/Microsoft.Compute/images/devops-agent-image",
-      "installDevOpsAgent": false
+    "_example_vs2022_buildtools": {
+      "_description": "Visual Studio 2022 Build Tools on Windows Server 2022 - Minimal build environment",
+      "microsoftImageType": "vs2022-buildtools",
+      "vmSize": "Standard_D2s_v3",
+      "configureDevOpsAgent": true,
+      "_features": [
+        "MSBuild",
+        ".NET SDKs",
+        "C++ Build Tools",
+        "Windows SDK",
+        "NuGet",
+        "Git (minimal)"
+      ]
     },
-    "_example_marketplace": {
-      "_description": "Example configuration for using marketplace image with script installation",
-      "useCustomImage": false,
-      "azureDevOpsUrl": "https://dev.azure.com/your-organization",
-      "installDevOpsAgent": true
-    }
+    "_example_vs2019_enterprise": {
+      "_description": "Visual Studio 2019 Enterprise on Windows Server 2019 - Legacy development environment",
+      "microsoftImageType": "vs2019-enterprise",
+      "vmSize": "Standard_D4s_v3",
+      "configureDevOpsAgent": true,
+      "_features": [
+        "Visual Studio 2019 Enterprise",
+        ".NET Framework 4.8",
+        ".NET Core 3.1",
+        "Azure CLI",
+        "Git for Windows",
+        "MSBuild"
+      ]
+    },
+    "_example_windowsserver_2022": {
+      "_description": "Windows Server 2022 Datacenter - Base server with custom tooling",
+      "microsoftImageType": "windowsserver-2022",
+      "vmSize": "Standard_D2s_v3",
+      "configureDevOpsAgent": true,
+      "_features": [
+        "Windows Server 2022",
+        "PowerShell 5.1",
+        "Basic Windows features",
+        "Custom tooling via script"
+      ]
+    },
+    "_marketplace_terms_note": "IMPORTANT: Visual Studio images require accepting marketplace terms before deployment. Run: az vm image terms accept --publisher MicrosoftVisualStudio --offer visualstudio2022 --plan vs-2022-ent-latest-ws2022"
   }
 }

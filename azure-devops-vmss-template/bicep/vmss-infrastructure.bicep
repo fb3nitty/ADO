@@ -1,5 +1,6 @@
+
 // Azure DevOps VMSS Infrastructure Template
-// Creates a Windows Server 2022 VM Scale Set with Azure DevOps build agents
+// Creates a Windows Server VM Scale Set with Microsoft's prebuilt Azure DevOps runner images
 //
 // SECURITY CONFIGURATION: PRIVATE IP ONLY WITH vWAN/AZURE FIREWALL
 // ================================================================
@@ -11,26 +12,36 @@
 // 4. Public Load Balancer removed - VMs are not directly accessible from internet
 // 5. No NAT Gateway required - Azure Firewall in vWAN provides secure outbound connectivity
 //
-// CUSTOM IMAGE SUPPORT
-// ===================
-// This template supports both marketplace images and custom Azure DevOps runner images:
+// MICROSOFT PREBUILT RUNNER IMAGES
+// ================================
+// This template uses Microsoft's official prebuilt runner images from Azure Marketplace:
 //
-// 1. MARKETPLACE IMAGES: Traditional approach using Windows Server base image with PowerShell script
-//    - Uses Windows Server 2022 Datacenter from Azure Marketplace
-//    - Installs Azure DevOps agent via CustomScriptExtension during VM startup
-//    - Slower deployment but more flexible for customization
+// 1. VISUAL STUDIO 2022: Windows Server 2022 with Visual Studio 2022 Enterprise
+//    - Publisher: MicrosoftVisualStudio
+//    - Offer: visualstudio2022
+//    - SKU: vs-2022-ent-latest-ws2022
+//    - Includes: VS 2022, .NET SDKs, Azure CLI, Git, build tools
 //
-// 2. CUSTOM IMAGES: Pre-built Azure DevOps runner images for faster deployment
-//    - Uses custom images from Azure Compute Gallery (Shared Image Gallery)
-//    - Agent already installed and configured in the image
-//    - Faster deployment and better consistency
-//    - Supports both managed images and Shared Image Gallery images
+// 2. VISUAL STUDIO 2019: Windows Server 2019 with Visual Studio 2019 Enterprise  
+//    - Publisher: MicrosoftVisualStudio
+//    - Offer: visualstudio2019
+//    - SKU: vs-2019-ent-latest-ws2019
+//    - Includes: VS 2019, .NET Framework, Azure CLI, Git, build tools
+//
+// 3. WINDOWS SERVER BUILD TOOLS: Windows Server 2022 with Build Tools
+//    - Publisher: MicrosoftVisualStudio
+//    - Offer: visualstudio2022
+//    - SKU: vs-2022-buildtools-latest-ws2022
+//    - Includes: MSBuild, .NET SDKs, minimal development tools
+//
+// These images come pre-configured with development tools and can optionally have
+// Azure DevOps agents pre-installed or configured via minimal PowerShell script.
 //
 // ASSUMPTIONS:
 // - You have an existing vWAN (Virtual WAN) infrastructure with Azure Firewall configured
 // - Azure Firewall is configured to allow outbound connectivity to Azure DevOps services
 // - The virtual network is either connected to vWAN or you're using an existing vWAN-connected VNet
-// - For custom images: You have a pre-built image with Azure DevOps agent installed
+// - Microsoft Visual Studio images require accepting marketplace terms before deployment
 // - Azure DevOps agents can reach Azure DevOps services through the Azure Firewall
 // while remaining completely private and secure from inbound internet traffic.
 
@@ -41,7 +52,7 @@ param location string = resourceGroup().location
 param vmssName string = 'vmss-devops-agents'
 
 @description('Size of the VM instances')
-param vmSize string = 'Standard_D2s_v3'
+param vmSize string = 'Standard_D4s_v3'
 
 @description('Number of VM instances')
 @minValue(1)
@@ -56,47 +67,34 @@ param adminUsername string = 'azureuser'
 param adminPassword string
 
 // =============================================================================
-// CUSTOM IMAGE CONFIGURATION PARAMETERS
+// MICROSOFT PREBUILT IMAGE CONFIGURATION PARAMETERS
 // =============================================================================
 
-@description('Use custom Azure DevOps runner image instead of marketplace image with script installation')
-param useCustomImage bool = false
-
-@description('Type of custom image to use. Only applicable when useCustomImage is true.')
+@description('Microsoft prebuilt runner image type to use')
 @allowed([
-  'sharedGallery'
-  'managedImage'
+  'vs2022-enterprise'
+  'vs2022-buildtools'
+  'vs2019-enterprise'
+  'windowsserver-2022'
 ])
-param customImageType string = 'sharedGallery'
-
-@description('Full resource ID of the custom image. Required when useCustomImage is true. Format depends on customImageType: For sharedGallery: /subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Compute/galleries/{galleryName}/images/{imageDefinitionName}/versions/{versionNumber} For managedImage: /subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Compute/images/{imageName}')
-param customImageResourceId string = ''
-
-@description('Name of the Azure Compute Gallery (Shared Image Gallery). Only used when customImageType is sharedGallery for documentation purposes.')
-param sharedImageGalleryName string = ''
-
-@description('Name of the image definition in the Shared Image Gallery. Only used when customImageType is sharedGallery for documentation purposes.')
-param imageDefinitionName string = ''
-
-@description('Version of the image in the Shared Image Gallery. Only used when customImageType is sharedGallery for documentation purposes.')
-param imageVersion string = 'latest'
+param microsoftImageType string = 'vs2022-enterprise'
 
 // =============================================================================
 // AZURE DEVOPS AGENT CONFIGURATION PARAMETERS
 // =============================================================================
 
-@description('Azure DevOps organization URL. Required when using marketplace images or when custom images need agent configuration.')
+@description('Azure DevOps organization URL. Required for agent registration.')
 param azureDevOpsUrl string = ''
 
-@description('Azure DevOps Personal Access Token. Required when using marketplace images or when custom images need agent configuration.')
+@description('Azure DevOps Personal Access Token. Required for agent registration.')
 @secure()
 param azureDevOpsPat string = ''
 
 @description('Azure DevOps agent pool name')
 param agentPoolName string = 'Default'
 
-@description('Install Azure DevOps agent via PowerShell script. Set to false when using custom images that already have the agent pre-installed.')
-param installDevOpsAgent bool = true
+@description('Configure Azure DevOps agent via PowerShell script. Set to false if agents are pre-configured in the image.')
+param configureDevOpsAgent bool = true
 
 // =============================================================================
 // NETWORKING PARAMETERS
@@ -149,23 +147,43 @@ param createdDate string = utcNow('yyyy-MM-dd')
 // VARIABLES AND COMPUTED VALUES
 // =============================================================================
 
-// Image reference configuration - conditional based on useCustomImage parameter
-var marketplaceImageReference = {
-  publisher: 'MicrosoftWindowsServer'
-  offer: 'WindowsServer'
-  sku: '2022-datacenter-azure-edition'
-  version: 'latest'
+// Microsoft prebuilt image references based on selected type
+var microsoftImageReferences = {
+  'vs2022-enterprise': {
+    publisher: 'MicrosoftVisualStudio'
+    offer: 'visualstudio2022'
+    sku: 'vs-2022-ent-latest-ws2022'
+    version: 'latest'
+  }
+  'vs2022-buildtools': {
+    publisher: 'MicrosoftVisualStudio'
+    offer: 'visualstudio2022'
+    sku: 'vs-2022-buildtools-latest-ws2022'
+    version: 'latest'
+  }
+  'vs2019-enterprise': {
+    publisher: 'MicrosoftVisualStudio'
+    offer: 'visualstudio2019'
+    sku: 'vs-2019-ent-latest-ws2019'
+    version: 'latest'
+  }
+  'windowsserver-2022': {
+    publisher: 'MicrosoftWindowsServer'
+    offer: 'WindowsServer'
+    sku: '2022-datacenter-azure-edition'
+    version: 'latest'
+  }
 }
 
-// Custom image reference - supports both Shared Image Gallery and Managed Images
-var customImageReference = useCustomImage ? (customImageType == 'sharedGallery' ? {
-  sharedGalleryImageId: customImageResourceId
-} : {
-  id: customImageResourceId
-}) : {}
+// Selected image reference
+var imageReference = microsoftImageReferences[microsoftImageType]
 
-// Final image reference - uses custom image if specified, otherwise marketplace image
-var imageReference = useCustomImage ? customImageReference : marketplaceImageReference
+// Purchase plan information for Visual Studio images (required for marketplace acceptance)
+var purchasePlan = startsWith(microsoftImageType, 'vs') ? {
+  name: imageReference.sku
+  publisher: imageReference.publisher
+  product: imageReference.offer
+} : null
 
 // Determine VNet and subnet names based on whether using existing or new
 var actualVnetName = useExistingVnet ? existingVnetName : vnetName
@@ -222,8 +240,8 @@ var commonTags = {
   Owner: ownerTag
   CreatedBy: 'Bicep-Template'
   CreatedDate: createdDate
-  ImageType: useCustomImage ? 'Custom' : 'Marketplace'
-  CustomImageType: useCustomImage ? customImageType : 'N/A'
+  ImageType: 'Microsoft-Prebuilt'
+  MicrosoftImageType: microsoftImageType
 }
 
 // =============================================================================
@@ -267,11 +285,13 @@ resource virtualNetwork 'Microsoft.Network/virtualNetworks@2023-09-01' = if (!us
   }
 }
 
-// VM Scale Set with conditional image reference and extension configuration
+// VM Scale Set with Microsoft prebuilt runner images
 resource vmScaleSet 'Microsoft.Compute/virtualMachineScaleSets@2023-09-01' = {
   name: vmssName
   location: location
   tags: commonTags
+  // Purchase plan for Visual Studio images
+  plan: purchasePlan
   sku: {
     name: vmSize
     tier: 'Standard'
@@ -291,7 +311,7 @@ resource vmScaleSet 'Microsoft.Compute/virtualMachineScaleSets@2023-09-01' = {
             storageAccountType: 'Premium_LRS'
           }
         }
-        // Dynamic image reference - uses custom image if specified, otherwise marketplace image
+        // Microsoft prebuilt image reference
         imageReference: imageReference
       }
       osProfile: {
@@ -327,11 +347,11 @@ resource vmScaleSet 'Microsoft.Compute/virtualMachineScaleSets@2023-09-01' = {
           }
         ]
       }
-      // Conditional extension profile - only install DevOps agent if using marketplace image or if explicitly requested
+      // Minimal extension profile - only configure DevOps agent if requested
       extensionProfile: {
-        extensions: installDevOpsAgent ? [
+        extensions: configureDevOpsAgent ? [
           {
-            name: 'InstallDevOpsAgent'
+            name: 'ConfigureDevOpsAgent'
             properties: {
               publisher: 'Microsoft.Compute'
               type: 'CustomScriptExtension'
@@ -339,11 +359,11 @@ resource vmScaleSet 'Microsoft.Compute/virtualMachineScaleSets@2023-09-01' = {
               autoUpgradeMinorVersion: true
               settings: {
                 fileUris: [
-                  'https://raw.githubusercontent.com/your-repo/azure-devops-vmss-template/main/scripts/install-devops-agent.ps1'
+                  'https://raw.githubusercontent.com/your-repo/azure-devops-vmss-template/main/scripts/configure-devops-agent.ps1'
                 ]
               }
               protectedSettings: {
-                commandToExecute: 'powershell -ExecutionPolicy Unrestricted -File install-devops-agent.ps1 -AzureDevOpsUrl "${azureDevOpsUrl}" -PersonalAccessToken "${azureDevOpsPat}" -AgentPool "${agentPoolName}" -AgentName "${vmssName}-agent"'
+                commandToExecute: 'powershell -ExecutionPolicy Unrestricted -File configure-devops-agent.ps1 -AzureDevOpsUrl "${azureDevOpsUrl}" -PersonalAccessToken "${azureDevOpsPat}" -AgentPool "${agentPoolName}" -AgentName "${vmssName}-agent"'
               }
             }
           }
@@ -427,8 +447,11 @@ output vmssId string = vmScaleSet.id
 output virtualNetworkId string = useExistingVnet ? resourceId(actualVnetResourceGroup, 'Microsoft.Network/virtualNetworks', actualVnetName) : virtualNetwork.id
 output subnetId string = resourceId(actualVnetResourceGroup, 'Microsoft.Network/virtualNetworks/subnets', actualVnetName, actualSubnetName)
 output networkSecurityGroupId string = networkSecurityGroup.id
-output imageType string = useCustomImage ? 'Custom' : 'Marketplace'
-output customImageResourceId string = useCustomImage ? customImageResourceId : 'N/A'
-output agentInstallationMethod string = installDevOpsAgent ? 'PowerShell Script' : 'Pre-installed in Image'
+output imageType string = 'Microsoft-Prebuilt'
+output microsoftImageType string = microsoftImageType
+output imagePublisher string = imageReference.publisher
+output imageOffer string = imageReference.offer
+output imageSku string = imageReference.sku
+output agentConfigurationMethod string = configureDevOpsAgent ? 'PowerShell Script' : 'Pre-configured in Image'
 // Note: VMs use private IPs only - no public IP addresses assigned to instances
 // Note: Outbound connectivity provided by vWAN Azure Firewall - no NAT Gateway outputs
