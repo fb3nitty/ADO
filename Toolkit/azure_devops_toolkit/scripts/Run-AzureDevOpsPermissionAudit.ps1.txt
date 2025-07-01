@@ -1,0 +1,347 @@
+
+<#
+.SYNOPSIS
+    Master script to run comprehensive Azure DevOps permissions audit
+.DESCRIPTION
+    This script orchestrates the execution of all permission extraction scripts and generates
+    a consolidated report with summary dashboard and recommendations.
+.PARAMETER OrganizationUrl
+    The URL of your Azure DevOps organization (e.g., https://dev.azure.com/yourorg)
+.PARAMETER PersonalAccessToken
+    Personal Access Token with appropriate permissions to read all settings
+.PARAMETER ProjectName
+    Specific project to analyze (optional - if not provided, analyzes all projects)
+.PARAMETER OutputDirectory
+    Directory where all output files will be saved (default: current directory)
+.PARAMETER GenerateExcelReport
+    Switch to generate consolidated Excel report (requires ImportExcel module)
+.EXAMPLE
+    .\Run-AzureDevOpsPermissionAudit.ps1 -OrganizationUrl "https://dev.azure.com/myorg" -PersonalAccessToken $pat -GenerateExcelReport
+#>
+
+param(
+    [Parameter(Mandatory=$true)]
+    [string]$OrganizationUrl,
+    
+    [Parameter(Mandatory=$true)]
+    [string]$PersonalAccessToken,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$ProjectName,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$OutputDirectory = ".\AzureDevOps_Audit_$(Get-Date -Format 'yyyyMMdd_HHmmss')",
+    
+    [Parameter(Mandatory=$false)]
+    [switch]$GenerateExcelReport
+)
+
+# Function to check if required modules are installed
+function Test-RequiredModules {
+    $requiredModules = @()
+    
+    if ($GenerateExcelReport) {
+        $requiredModules += "ImportExcel"
+    }
+    
+    foreach ($module in $requiredModules) {
+        if (-not (Get-Module -ListAvailable -Name $module)) {
+            Write-Warning "Required module '$module' is not installed."
+            $install = Read-Host "Would you like to install it now? (Y/N)"
+            if ($install -eq 'Y' -or $install -eq 'y') {
+                try {
+                    Install-Module -Name $module -Force -Scope CurrentUser
+                    Write-Host "Module '$module' installed successfully." -ForegroundColor Green
+                }
+                catch {
+                    Write-Error "Failed to install module '$module': $($_.Exception.Message)"
+                    return $false
+                }
+            } else {
+                Write-Warning "Cannot proceed without required module '$module'"
+                return $false
+            }
+        }
+    }
+    return $true
+}
+
+# Function to run individual permission scripts
+function Invoke-PermissionScript {
+    param(
+        [string]$ScriptPath,
+        [hashtable]$Parameters,
+        [string]$Description
+    )
+    
+    Write-Host "Running $Description..." -ForegroundColor Yellow
+    
+    try {
+        $paramString = ($Parameters.GetEnumerator() | ForEach-Object { "-$($_.Key) `"$($_.Value)`"" }) -join " "
+        $command = "& `"$ScriptPath`" $paramString"
+        
+        Invoke-Expression $command
+        
+        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) {
+            Write-Host "$Description completed successfully." -ForegroundColor Green
+            return $true
+        } else {
+            Write-Warning "$Description completed with warnings."
+            return $false
+        }
+    }
+    catch {
+        Write-Error "$Description failed: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+# Function to generate summary report
+function New-SummaryReport {
+    param(
+        [string]$OutputDir,
+        [array]$CsvFiles
+    )
+    
+    $summaryPath = Join-Path $OutputDir "SUMMARY_REPORT.md"
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    
+    $summary = @"
+# Azure DevOps Permissions Audit Summary Report
+
+**Generated:** $timestamp  
+**Organization:** $OrganizationUrl  
+**Audit Scope:** $(if ($ProjectName) { "Project: $ProjectName" } else { "All Projects" })
+
+## Files Generated
+
+"@
+    
+    foreach ($file in $CsvFiles) {
+        if (Test-Path $file) {
+            $itemCount = (Import-Csv $file).Count
+            $fileName = Split-Path $file -Leaf
+            $summary += "- **$fileName**: $itemCount items`n"
+        }
+    }
+    
+    $summary += @"
+
+## Key Findings and Recommendations
+
+### Security Groups Analysis
+- Review organization-level administrators (Project Collection Administrators)
+- Validate project-level permissions alignment with business requirements
+- Ensure proper separation of duties
+
+### Repository Security
+- Verify branch policies are enforced on main/master branches
+- Check for appropriate code review requirements
+- Validate repository permissions follow least privilege principle
+
+### Pipeline Security
+- Review service connection permissions and scoping
+- Validate agent pool access controls
+- Check variable group security and secret management
+
+### Compliance Considerations
+- Ensure audit logging is enabled and monitored
+- Validate user access reviews are conducted regularly
+- Check for proper offboarding procedures
+
+## Next Steps
+1. Review detailed CSV files for specific permission assignments
+2. Identify and remediate any permission violations
+3. Implement regular permission audits (quarterly recommended)
+4. Update security group memberships as needed
+5. Document and communicate any changes to stakeholders
+
+---
+*This report was generated using the Azure DevOps Permission Matrix Toolkit*
+"@
+    
+    $summary | Out-File -FilePath $summaryPath -Encoding UTF8
+    Write-Host "Summary report generated: $summaryPath" -ForegroundColor Green
+}
+
+# Function to generate Excel report
+function New-ExcelReport {
+    param(
+        [string]$OutputDir,
+        [array]$CsvFiles
+    )
+    
+    if (-not $GenerateExcelReport) { return }
+    
+    try {
+        Import-Module ImportExcel -Force
+        
+        $excelPath = Join-Path $OutputDir "Azure_DevOps_Permissions_Audit.xlsx"
+        
+        # Create summary sheet
+        $summaryData = @()
+        foreach ($file in $CsvFiles) {
+            if (Test-Path $file) {
+                $data = Import-Csv $file
+                $fileName = [System.IO.Path]::GetFileNameWithoutExtension((Split-Path $file -Leaf))
+                $summaryData += [PSCustomObject]@{
+                    DataType = $fileName
+                    RecordCount = $data.Count
+                    FilePath = $file
+                    LastModified = (Get-Item $file).LastWriteTime
+                }
+            }
+        }
+        
+        $summaryData | Export-Excel -Path $excelPath -WorksheetName "Summary" -AutoSize -BoldTopRow
+        
+        # Add each CSV as a separate worksheet
+        foreach ($file in $CsvFiles) {
+            if (Test-Path $file) {
+                $data = Import-Csv $file
+                $sheetName = [System.IO.Path]::GetFileNameWithoutExtension((Split-Path $file -Leaf))
+                $sheetName = $sheetName -replace ".*_permissions_.*", "" -replace "_", " "
+                $sheetName = (Get-Culture).TextInfo.ToTitleCase($sheetName)
+                
+                if ($sheetName.Length -gt 31) { $sheetName = $sheetName.Substring(0, 31) }
+                
+                $data | Export-Excel -Path $excelPath -WorksheetName $sheetName -AutoSize -BoldTopRow
+            }
+        }
+        
+        Write-Host "Excel report generated: $excelPath" -ForegroundColor Green
+    }
+    catch {
+        Write-Warning "Failed to generate Excel report: $($_.Exception.Message)"
+    }
+}
+
+# Main execution
+try {
+    Write-Host "Starting Azure DevOps Comprehensive Permissions Audit..." -ForegroundColor Green
+    Write-Host "Organization: $OrganizationUrl" -ForegroundColor Cyan
+    Write-Host "Output Directory: $OutputDirectory" -ForegroundColor Cyan
+    
+    # Validate prerequisites
+    if (-not (Test-RequiredModules)) {
+        exit 1
+    }
+    
+    # Create output directory
+    if (-not (Test-Path $OutputDirectory)) {
+        New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+        Write-Host "Created output directory: $OutputDirectory" -ForegroundColor Green
+    }
+    
+    # Get script directory
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $csvFiles = @()
+    
+    # Run organization permissions script
+    $orgScript = Join-Path $scriptDir "Get-AzureDevOpsOrgPermissions.ps1"
+    $orgOutput = Join-Path $OutputDirectory "org_permissions.csv"
+    $orgParams = @{
+        OrganizationUrl = $OrganizationUrl
+        PersonalAccessToken = $PersonalAccessToken
+        OutputPath = $orgOutput
+    }
+    
+    if (Test-Path $orgScript) {
+        if (Invoke-PermissionScript -ScriptPath $orgScript -Parameters $orgParams -Description "Organization Permissions Extraction") {
+            $csvFiles += $orgOutput
+        }
+    }
+    
+    # Run project permissions script
+    $projectScript = Join-Path $scriptDir "Get-AzureDevOpsProjectPermissions.ps1"
+    $projectOutput = Join-Path $OutputDirectory "project_permissions.csv"
+    $projectParams = @{
+        OrganizationUrl = $OrganizationUrl
+        PersonalAccessToken = $PersonalAccessToken
+        OutputPath = $projectOutput
+    }
+    if ($ProjectName) { $projectParams.ProjectName = $ProjectName }
+    
+    if (Test-Path $projectScript) {
+        if (Invoke-PermissionScript -ScriptPath $projectScript -Parameters $projectParams -Description "Project Permissions Extraction") {
+            $csvFiles += $projectOutput
+        }
+    }
+    
+    # Get list of projects for repository and pipeline analysis
+    $headers = @{Authorization = "Basic $([Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$PersonalAccessToken")))"}
+    $projectsToAnalyze = @()
+    
+    if ($ProjectName) {
+        $projectsToAnalyze = @($ProjectName)
+    } else {
+        try {
+            $projectsUri = "$OrganizationUrl/_apis/projects?api-version=7.1-preview.4"
+            $projects = Invoke-RestMethod -Uri $projectsUri -Headers $headers -Method GET
+            if ($projects -and $projects.value) {
+                $projectsToAnalyze = $projects.value | ForEach-Object { $_.name }
+            }
+        }
+        catch {
+            Write-Warning "Could not retrieve projects list. Repository and pipeline analysis will be skipped."
+        }
+    }
+    
+    # Run repository and pipeline scripts for each project
+    foreach ($project in $projectsToAnalyze) {
+        Write-Host "Analyzing project: $project" -ForegroundColor Yellow
+        
+        # Repository permissions
+        $repoScript = Join-Path $scriptDir "Get-AzureDevOpsRepoPermissions.ps1"
+        $repoOutput = Join-Path $OutputDirectory "repo_permissions_$($project -replace '[^\w]', '_').csv"
+        $repoParams = @{
+            OrganizationUrl = $OrganizationUrl
+            ProjectName = $project
+            PersonalAccessToken = $PersonalAccessToken
+            OutputPath = $repoOutput
+        }
+        
+        if (Test-Path $repoScript) {
+            if (Invoke-PermissionScript -ScriptPath $repoScript -Parameters $repoParams -Description "Repository Permissions for $project") {
+                $csvFiles += $repoOutput
+            }
+        }
+        
+        # Pipeline permissions
+        $pipelineScript = Join-Path $scriptDir "Get-AzureDevOpsPipelinePermissions.ps1"
+        $pipelineOutput = Join-Path $OutputDirectory "pipeline_permissions_$($project -replace '[^\w]', '_').csv"
+        $pipelineParams = @{
+            OrganizationUrl = $OrganizationUrl
+            ProjectName = $project
+            PersonalAccessToken = $PersonalAccessToken
+            OutputPath = $pipelineOutput
+        }
+        
+        if (Test-Path $pipelineScript) {
+            if (Invoke-PermissionScript -ScriptPath $pipelineScript -Parameters $pipelineParams -Description "Pipeline Permissions for $project") {
+                $csvFiles += $pipelineOutput
+            }
+        }
+    }
+    
+    # Generate summary report
+    New-SummaryReport -OutputDir $OutputDirectory -CsvFiles $csvFiles
+    
+    # Generate Excel report if requested
+    if ($GenerateExcelReport) {
+        New-ExcelReport -OutputDir $OutputDirectory -CsvFiles $csvFiles
+    }
+    
+    Write-Host "`nAudit completed successfully!" -ForegroundColor Green
+    Write-Host "Results saved to: $OutputDirectory" -ForegroundColor Cyan
+    Write-Host "Files generated: $($csvFiles.Count + 1) CSV files + Summary report" -ForegroundColor Cyan
+    
+    if ($GenerateExcelReport) {
+        Write-Host "Excel report: Azure_DevOps_Permissions_Audit.xlsx" -ForegroundColor Cyan
+    }
+}
+catch {
+    Write-Error "Audit execution failed: $($_.Exception.Message)"
+    Write-Error "Stack trace: $($_.ScriptStackTrace)"
+    exit 1
+}

@@ -1,0 +1,162 @@
+
+<#
+.SYNOPSIS
+    Extracts organization-level permissions from Azure DevOps Services
+.DESCRIPTION
+    This script connects to Azure DevOps Services and extracts organization-level permissions,
+    security groups, and user assignments for audit and documentation purposes.
+.PARAMETER OrganizationUrl
+    The URL of your Azure DevOps organization (e.g., https://dev.azure.com/yourorg)
+.PARAMETER PersonalAccessToken
+    Personal Access Token with appropriate permissions to read organization settings
+.PARAMETER OutputPath
+    Path where the output CSV file will be saved
+.EXAMPLE
+    .\Get-AzureDevOpsOrgPermissions.ps1 -OrganizationUrl "https://dev.azure.com/myorg" -PersonalAccessToken $pat -OutputPath "C:\Reports\org_permissions.csv"
+#>
+
+param(
+    [Parameter(Mandatory=$true)]
+    [string]$OrganizationUrl,
+    
+    [Parameter(Mandatory=$true)]
+    [string]$PersonalAccessToken,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$OutputPath = ".\org_permissions_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
+)
+
+# Function to create authentication header
+function Get-AuthHeader {
+    param([string]$Token)
+    $base64AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$Token"))
+    return @{Authorization = "Basic $base64AuthInfo"}
+}
+
+# Function to make REST API calls with error handling
+function Invoke-AzureDevOpsApi {
+    param(
+        [string]$Uri,
+        [hashtable]$Headers,
+        [string]$Method = "GET"
+    )
+    
+    try {
+        $response = Invoke-RestMethod -Uri $Uri -Headers $Headers -Method $Method -ContentType "application/json"
+        return $response
+    }
+    catch {
+        Write-Error "API call failed for $Uri : $($_.Exception.Message)"
+        return $null
+    }
+}
+
+# Main execution
+try {
+    Write-Host "Starting Azure DevOps Organization Permissions Extraction..." -ForegroundColor Green
+    
+    # Validate organization URL format
+    if ($OrganizationUrl -notmatch "^https://dev\.azure\.com/[^/]+/?$") {
+        throw "Invalid organization URL format. Expected: https://dev.azure.com/yourorg"
+    }
+    
+    $orgName = ($OrganizationUrl -split "/")[-1].TrimEnd("/")
+    $headers = Get-AuthHeader -Token $PersonalAccessToken
+    
+    # Initialize results array
+    $results = @()
+    
+    Write-Host "Extracting organization-level security groups..." -ForegroundColor Yellow
+    
+    # Get organization security groups
+    $groupsUri = "$OrganizationUrl/_apis/graph/groups?api-version=7.1-preview.1"
+    $groups = Invoke-AzureDevOpsApi -Uri $groupsUri -Headers $headers
+    
+    if ($groups -and $groups.value) {
+        foreach ($group in $groups.value) {
+            # Get group members
+            $membersUri = "$OrganizationUrl/_apis/graph/memberships/$($group.descriptor)?direction=down&api-version=7.1-preview.1"
+            $members = Invoke-AzureDevOpsApi -Uri $membersUri -Headers $headers
+            
+            # Get group permissions (simplified - actual implementation would require more specific APIs)
+            $permissionsUri = "$OrganizationUrl/_apis/accesscontrollists/$($group.descriptor)?api-version=7.1-preview.1"
+            $permissions = Invoke-AzureDevOpsApi -Uri $permissionsUri -Headers $headers
+            
+            $memberCount = if ($members -and $members.value) { $members.value.Count } else { 0 }
+            
+            $results += [PSCustomObject]@{
+                GroupName = $group.displayName
+                GroupType = $group.subjectKind
+                Description = $group.description
+                MemberCount = $memberCount
+                IsProjectLevel = $false
+                Scope = "Organization"
+                LastModified = $group.lastModifiedDate
+                Permissions = if ($permissions) { ($permissions | ConvertTo-Json -Compress) } else { "N/A" }
+            }
+        }
+    }
+    
+    Write-Host "Extracting organization-level users..." -ForegroundColor Yellow
+    
+    # Get organization users
+    $usersUri = "$OrganizationUrl/_apis/graph/users?api-version=7.1-preview.1"
+    $users = Invoke-AzureDevOpsApi -Uri $usersUri -Headers $headers
+    
+    if ($users -and $users.value) {
+        foreach ($user in $users.value) {
+            # Get user's group memberships
+            $membershipUri = "$OrganizationUrl/_apis/graph/memberships/$($user.descriptor)?direction=up&api-version=7.1-preview.1"
+            $memberships = Invoke-AzureDevOpsApi -Uri $membershipUri -Headers $headers
+            
+            $groupMemberships = if ($memberships -and $memberships.value) {
+                ($memberships.value | ForEach-Object { $_.containerDescriptor }) -join "; "
+            } else { "None" }
+            
+            $results += [PSCustomObject]@{
+                UserName = $user.displayName
+                UserEmail = $user.mailAddress
+                UserType = $user.subjectKind
+                Origin = $user.origin
+                GroupMemberships = $groupMemberships
+                LastAccessed = $user.lastAccessedDate
+                Scope = "Organization"
+                Status = "Active"
+            }
+        }
+    }
+    
+    Write-Host "Extracting organization settings and policies..." -ForegroundColor Yellow
+    
+    # Get organization policies (requires specific API calls for each policy type)
+    $policiesUri = "$OrganizationUrl/_apis/policy/configurations?api-version=7.1-preview.1"
+    $policies = Invoke-AzureDevOpsApi -Uri $policiesUri -Headers $headers
+    
+    if ($policies -and $policies.value) {
+        foreach ($policy in $policies.value) {
+            $results += [PSCustomObject]@{
+                PolicyName = $policy.type.displayName
+                PolicyType = $policy.type.id
+                IsEnabled = $policy.isEnabled
+                IsBlocking = $policy.isBlocking
+                Scope = "Organization"
+                Settings = ($policy.settings | ConvertTo-Json -Compress)
+                CreatedDate = $policy.createdDate
+                ModifiedDate = $policy.revision.revisionDate
+            }
+        }
+    }
+    
+    # Export results to CSV
+    Write-Host "Exporting results to: $OutputPath" -ForegroundColor Green
+    $results | Export-Csv -Path $OutputPath -NoTypeInformation -Encoding UTF8
+    
+    Write-Host "Organization permissions extraction completed successfully!" -ForegroundColor Green
+    Write-Host "Total items extracted: $($results.Count)" -ForegroundColor Cyan
+    Write-Host "Output saved to: $OutputPath" -ForegroundColor Cyan
+}
+catch {
+    Write-Error "Script execution failed: $($_.Exception.Message)"
+    Write-Error "Stack trace: $($_.ScriptStackTrace)"
+    exit 1
+}
