@@ -234,7 +234,7 @@ try {
     }
     
     # Get script directory
-    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $scriptDir = "C:\azure_devops_toolkit\scripts"
     $csvFiles = @()
     
     # Run organization permissions script
