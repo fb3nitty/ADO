@@ -11,13 +11,13 @@ $headers = @{
 $results = @()
 
 # 1. Get all projects
-$projects = (Invoke-RestMethod -Uri "$OrgUrl/_apis/projects?api-version=7.1-preview.7" -Headers $headers).value
+$projects = (Invoke-RestMethod -Uri "$OrgUrl/_apis/projects?api-version=6.0" -Headers $headers).value
 
 foreach ($project in $projects) {
     $projectName = $project.name
 
     # 2. Get groups for this project
-    $groupsUrl = "$OrgUrl/_apis/projects/$($project.id)/teams?api-version=7.1-preview.3"
+    $groupsUrl = "$OrgUrl/_apis/projects/$($project.id)/teams?api-version=6.0"
     $teams = (Invoke-RestMethod -Uri $groupsUrl -Headers $headers).value
 
     foreach ($team in $teams) {
@@ -25,7 +25,7 @@ foreach ($project in $projects) {
         $teamId = $team.id
 
         # 3. Get team members
-        $membersUrl = "$OrgUrl/_apis/projects/$($project.id)/teams/$teamId/members?api-version=7.1-preview.2"
+        $membersUrl = "$OrgUrl/_apis/projects/$($project.id)/teams/$teamId/members?api-version=6.0"
         $members = (Invoke-RestMethod -Uri $membersUrl -Headers $headers).value
 
         foreach ($member in $members) {
