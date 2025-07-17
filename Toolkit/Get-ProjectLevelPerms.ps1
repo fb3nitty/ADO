@@ -8,49 +8,34 @@ $headers = @{
     Authorization = "Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$PAT"))
 }
 
-# Get all projects
-$projectsUrl = "$OrgUrl/_apis/projects?api-version=7.1-preview.1"
-$projects = (Invoke-RestMethod -Uri $projectsUrl -Headers $headers).value
-
 $results = @()
+
+# 1. Get all projects
+$projects = (Invoke-RestMethod -Uri "$OrgUrl/_apis/projects?api-version=7.1-preview.7" -Headers $headers).value
 
 foreach ($project in $projects) {
     $projectName = $project.name
-    $groupUrl = "$OrgUrl/_apis/graph/groups?scopeDescriptor=Microsoft.TeamFoundation.Project%2F$($project.id)&api-version=7.1-preview.1"
-    $groups = (Invoke-RestMethod -Uri $groupUrl -Headers $headers).value
 
-    foreach ($group in $groups) {
-        $groupDescriptor = $group.descriptor
-        $groupName = $group.displayName
+    # 2. Get groups for this project
+    $groupsUrl = "$OrgUrl/_apis/projects/$($project.id)/teams?api-version=7.1-preview.3"
+    $teams = (Invoke-RestMethod -Uri $groupsUrl -Headers $headers).value
 
-        # Get members of the group
-        $membersUrl = "$OrgUrl/_apis/graph/memberships/$groupDescriptor?direction=down&api-version=7.1-preview.1"
-        $memberships = (Invoke-RestMethod -Uri $membersUrl -Headers $headers).value
+    foreach ($team in $teams) {
+        $teamName = $team.name
+        $teamId = $team.id
 
-        foreach ($membership in $memberships) {
-            $memberDescriptor = $membership.memberDescriptor
-            $memberUrl = "$OrgUrl/_apis/graph/descriptors/$memberDescriptor?api-version=7.1-preview.1"
-            $descriptor = (Invoke-RestMethod -Uri $memberUrl -Headers $headers).value
+        # 3. Get team members
+        $membersUrl = "$OrgUrl/_apis/projects/$($project.id)/teams/$teamId/members?api-version=7.1-preview.2"
+        $members = (Invoke-RestMethod -Uri $membersUrl -Headers $headers).value
 
-            $type = $descriptor.subjectKind
-
-            # Get user/group details only if user or group
-            if ($type -eq "user" -or $type -eq "group") {
-                $memberInfoUrl = "$OrgUrl/_apis/graph/users/$memberDescriptor?api-version=7.1-preview.1"
-                try {
-                    $member = Invoke-RestMethod -Uri $memberInfoUrl -Headers $headers
-
-                    $results += [pscustomobject]@{
-                        ProjectName        = $projectName
-                        GroupName          = $groupName
-                        GroupDescriptor    = $groupDescriptor
-                        UserPrincipalName  = $member.principalName
-                        Origin             = $member.origin
-                        SubjectKind        = $member.subjectKind
-                    }
-                } catch {
-                    # In case it's a group not a user (use different endpoint if needed)
-                }
+        foreach ($member in $members) {
+            $results += [pscustomobject]@{
+                ProjectName        = $projectName
+                TeamName           = $teamName
+                UserPrincipalName  = $member.identity.uniqueName
+                DisplayName        = $member.identity.displayName
+                SubjectKind        = $member.identity.subjectKind
+                Origin             = $member.identity.origin
             }
         }
     }
