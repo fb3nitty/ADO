@@ -10,42 +10,43 @@ $headers = @{
 
 $results = @()
 
-# Get all projects
+# 1. Get all projects
 $projects = (Invoke-RestMethod -Uri "$OrgUrl/_apis/projects?api-version=6.0" -Headers $headers).value
 
 foreach ($project in $projects) {
     $projectName = $project.name
 
-    # Get groups for the project
-    $groupsUrl = "$OrgUrl/_apis/securitynamespaces/WindowsLiveId/groups?scope=$($project.id)&api-version=6.0-preview.1"
-    $groups = (Invoke-RestMethod -Uri $groupsUrl -Headers $headers).value
+    # 2. Get all Graph groups scoped to this project
+    $scopeUrl = "$OrgUrl/_apis/graph/groups?scopeDescriptor=Microsoft.TeamFoundation.Project%2F$($project.id)&api-version=6.0-preview.1"
+    $groups = (Invoke-RestMethod -Uri $scopeUrl -Headers $headers).value
 
-    # Find Project Administrators group
-    $adminGroup = $groups | Where-Object { $_.principalName -like "*Project Administrators*" }
+    # 3. Find the Project Administrators group
+    $adminGroup = $groups | Where-Object { $_.displayName -eq "Project Administrators" }
 
     if ($adminGroup) {
         $groupDescriptor = $adminGroup.descriptor
+        $groupName = $adminGroup.displayName
 
-        # Get direct members
+        # 4. Get direct members of the group
         $membersUrl = "$OrgUrl/_apis/graph/memberships/$groupDescriptor?direction=down&api-version=6.0-preview.1"
         $memberships = (Invoke-RestMethod -Uri $membersUrl -Headers $headers).value
 
         foreach ($membership in $memberships) {
             $memberDescriptor = $membership.memberDescriptor
-            $memberUrl = "$OrgUrl/_apis/graph/users/$memberDescriptor?api-version=6.0-preview.1"
+            $userUrl = "$OrgUrl/_apis/graph/users/$memberDescriptor?api-version=6.0-preview.1"
 
             try {
-                $member = Invoke-RestMethod -Uri $memberUrl -Headers $headers
+                $member = Invoke-RestMethod -Uri $userUrl -Headers $headers
                 $results += [pscustomobject]@{
                     ProjectName        = $projectName
-                    GroupName          = $adminGroup.principalName
+                    GroupName          = $groupName
                     DisplayName        = $member.displayName
                     UserPrincipalName  = $member.principalName
                     Origin             = $member.origin
                     SubjectKind        = $member.subjectKind
                 }
             } catch {
-                # Skip if member is not a user (e.g., group)
+                # skip non-user members (e.g., groups)
             }
         }
     }
