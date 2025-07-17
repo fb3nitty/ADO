@@ -1,39 +1,31 @@
-param(
-    [string]$OutputFile = "AzDO_ProjectAdminsReport.csv"
-)
-
-Import-Module Az.DevOps
-$org = Get-AzDevOpsOrganization
-$projects = Get-AzDevOpsProject
+$projects = az devops project list --query "value[].name" -o tsv
 
 $results = @()
 
 foreach ($project in $projects) {
-    $projectName = $project.Name
+    Write-Host "Checking $project..."
+    $admins = az devops security group list --project "$project" --query "graphGroups[?contains(displayName, 'Project Administrators')].descriptor" -o tsv
 
-    # Look for the "Project Administrators" team
-    $adminTeam = Get-AzDevOpsTeam -ProjectName $projectName | Where-Object { $_.Name -eq "$projectName Team" }
-
-    if ($adminTeam) {
-        $members = Get-AzDevOpsTeamMember -ProjectName $projectName -Team $adminTeam.Name
+    foreach ($group in $admins) {
+        $members = az devops security group membership list --id $group --relationship members --query "members[]" -o json | ConvertFrom-Json
 
         foreach ($member in $members) {
             $results += [pscustomobject]@{
-                ProjectName        = $projectName
-                TeamName           = $adminTeam.Name
-                DisplayName        = $member.User.DisplayName
-                UserPrincipalName  = $member.User.PrincipalName
-                SubjectKind        = $member.User.SubjectKind
-                Origin             = $member.User.Origin
+                ProjectName        = $project
+                DisplayName        = $member.displayName
+                PrincipalName      = $member.principalName
+                Origin             = $member.origin
+                SubjectKind        = $member.subjectKind
             }
         }
     }
 }
 
-$results | Export-Csv -Path $OutputFile -NoTypeInformation
-Write-Host "`n✅ Report saved to $OutputFile"
+$results | Export-Csv -Path "AzDO_ProjectAdminsReport.csv" -NoTypeInformation
+Write-Host "`n✅ Report saved to AzDO_ProjectAdminsReport.csv"
 
+#az extension add --name azure-devops
 
-#Install-Module Az.DevOps -Scope CurrentUser -Force
 #az login
-#Set-AzDevOpsOrganization -Organization https://dev.azure.com/yourorg
+#az devops configure --defaults organization=https://dev.azure.com/yourorg
+
